@@ -44,7 +44,7 @@
       <select id="perScreenSel">
         <option value="1" selected>1 張</option>
         <option value="2">2 張</option>
-        <option value="4">4 張 (每畫面約 11,600 位元組)</option>
+        <option value="4">4 張</option>
         <option value="6">6 張</option>
         <option value="8">8 張</option>
       </select>
@@ -54,8 +54,8 @@
   <div class="row">
     <label>編碼格式:
       <select id="formatSel">
-        <option value="fountain" selected>噴泉碼・二進位 (最快，不怕漏張；要用接收網頁，引擎選 ZXing 或自動)</option>
-        <option value="fountaintxt">噴泉碼・文字 (不怕漏張；接收網頁任何引擎都可，容量少 1/4)</option>
+        <option value="fountain" selected>噴泉碼・二進位 (最快，不怕漏張；要用接收網頁)</option>
+        <option value="fountaintxt">噴泉碼・文字 (不怕漏張；接收網頁可選系統內建引擎，容量少 1/4)</option>
         <option value="tagged">帶頁碼標籤 [頁/總頁|檔名|Base64] (防漏頁、亂序可重組)</option>
         <option value="b64">分段純 Base64 (只適合每畫面 1 張、依序掃描)</option>
         <option value="dataurl">單張 DataURL 直出 (小檔案貼入手機瀏覽器直接下載)</option>
@@ -101,7 +101,7 @@
 
   <div class="helper-box">
     <b>噴泉碼（預設）：</b>畫面會不斷播出新的編碼張，手機用接收網頁對著掃，漏掉哪幾張都沒關係，收到的張數夠了就自動還原並驗證 CRC32，不需要補頁，也不必從頭開始對。先播完一輪原文，之後持續播補償碼，手機顯示收齊就可以停。掃不太到時把輪播間隔調慢或單張容量調小。<br>
-    <b>容量說明：</b>單張標準 QR Code 的物理上限是 2,953 位元組（Version 40、容錯 L），所以單張無法再放大 10 倍。本版把單張拉到上限（原版上限 1,200），再讓一個畫面同時顯示多張，預設 4 張 x 2,900 = 每畫面約 11,600 位元組，約為原版單張上限的 10 倍。<br>
+    <b>容量說明：</b>單張標準 QR Code 的物理上限是 2,953 位元組（Version 40、容錯 L），所以單張無法再放大 10 倍。單張容量最大可選 2,900，並可讓一個畫面同時顯示多張（4 張 x 2,900 = 每畫面約 11,600 位元組）；預設是 1 張 x 1,200 搭配 0.1 秒高速輪播，螢幕夠大、手機掃得到再往上調。<br>
     <b>掃不到時：</b>Version 40 每邊 177 格，螢幕解析度不夠時每格只剩 2 像素，手機不易對焦。請先把「每畫面張數」降到 2 或 1，再不行把「單張容量」降到 2000 或 1200；瀏覽器視窗請最大化（F11 全螢幕更好）。<br>
     <b>多張同畫面：</b>掃描順序不固定，所以請用「帶頁碼標籤」格式，手機端依 <code>頁/總頁|檔名|資料</code> 的頁碼排序後，把資料段接起來再做 Base64 解碼。選多張時「分段純 Base64」會自動改成帶頁碼標籤。<br>
     <b>補漏頁：</b>接收網頁會列出還缺的頁碼（例如 <code>7,12,19-22</code>），把它打進上方「只補播這幾張」再按「只播這幾張」，就只輪播缺的那幾張；按「恢復全部」回到整份。<br>

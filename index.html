@@ -17,7 +17,7 @@
   #flash.on { opacity: 1; transition: none; }
   button, select { padding: 10px 14px; border-radius: 8px; border: 1px solid #444; background: #3a3b3c; color: #fff; font-size: 15px; }
   button.primary { background: #2e89ff; border-color: #2e89ff; font-weight: bold; }
-  button.good { background: #2e9d4e; border-color: #2e9d4e; font-weight: bold; font-size: 17px; width: 100%; padding: 14px; }
+  a.good { display: block; background: #2e9d4e; color: #fff; text-align: center; text-decoration: none; border-radius: 8px; font-weight: bold; font-size: 17px; padding: 14px; word-break: break-all; }
   .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
   .status { font-size: 16px; font-weight: bold; color: #45bd62; word-break: break-all; }
   .sub { font-size: 13px; color: #b0b3b8; margin-top: 4px; word-break: break-all; }
@@ -46,7 +46,7 @@
       <button class="primary" id="startBtn">開始掃描</button>
       <button id="resetBtn">清除重來</button>
       <select id="engineSel" title="解碼引擎">
-        <option value="auto">引擎：自動</option>
+        <option value="auto">引擎：自動（ZXing）</option>
         <option value="native">引擎：系統內建</option>
         <option value="zxing">引擎：ZXing</option>
       </select>
@@ -61,7 +61,7 @@
     <div id="missBox" hidden style="margin:6px 0 10px"><div id="missList"></div></div>
     <div id="grid"></div>
     <div id="doneBox" hidden style="margin-top:12px">
-      <a id="dl"><button class="good" id="dlBtn">下載檔案</button></a>
+      <a id="dl" class="good">下載檔案</a>
       <div class="sub" id="doneInfo"></div>
     </div>
   </div>
@@ -83,7 +83,7 @@
       3. <b>噴泉碼</b>（傳送端預設）：進度條會一路往前，漏掉哪幾張都沒關係，收夠了自動完成並驗證 CRC32，不用補頁。<br>
       4. <b>帶頁碼標籤</b>：方格一格一格變綠；缺的頁碼會用橘色字列出，照打進傳送端「只補播這幾張」。<br>
       5. 完成後按「下載檔案」。<br>
-      6. 掃不到：手機靠近一點、傳送端把輪播間隔調慢、「單張容量」調小、「每畫面張數」降到 1，或在上方換一個解碼引擎。二進位噴泉碼只有 ZXing 引擎讀得到（自動模式會自己切換）。<br>
+      6. 掃不到：手機靠近一點、傳送端把輪播間隔調慢、「單張容量」調小、「每畫面張數」降到 1，或在上方換一個解碼引擎。「系統內建」引擎在部分 Android 上可能較快，但讀不了二進位噴泉碼，只適合文字版噴泉碼與帶頁碼標籤。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
   </div>
@@ -175,7 +175,7 @@ var LT = (function () {
     blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
     var a = $('dl'); a.href = blobUrl; a.download = name;
     var crc = hex8(crc32(bytes));
-    $('dlBtn').textContent = '下載 ' + name;
+    a.textContent = '下載 ' + name;
     $('doneInfo').textContent = '大小 ' + bytes.length + ' Bytes | CRC32: ' + crc + note;
     $('doneBox').hidden = false;
     lastResult = { name: name, bytes: bytes, crc: crc };
@@ -346,7 +346,7 @@ var LT = (function () {
   }
 
   /* ---------------- 解碼引擎 ---------------- */
-  var nativeDet = null, zxingReady = null, engineName = '', forceZxing = false;
+  var nativeDet = null, zxingReady = null, engineName = '', nativeNote = '';
 
   function loadZxing() {
     if (zxingReady) return zxingReady;
@@ -370,7 +370,7 @@ var LT = (function () {
   function pickEngine() {
     var want = $('engineSel').value;
     var p = Promise.resolve(false);
-    if (want !== 'zxing' && !(want === 'auto' && forceZxing) && 'BarcodeDetector' in window) {
+    if (want === 'native' && 'BarcodeDetector' in window) {   // 系統內建引擎讀不了二進位噴泉碼，只在手動選擇時使用
       p = BarcodeDetector.getSupportedFormats().then(function (f) {
         if (f.indexOf('qr_code') < 0) return false;
         nativeDet = new BarcodeDetector({ formats: ['qr_code'] });
@@ -380,6 +380,7 @@ var LT = (function () {
     return p.then(function (ok) {
       if (ok) { engineName = '系統內建'; return; }
       nativeDet = null;
+      if (want === 'native') nativeNote = '這個瀏覽器沒有系統內建引擎，改用 ZXing';
       return loadZxing().then(function () { engineName = 'ZXing'; });
     });
   }
@@ -406,10 +407,10 @@ var LT = (function () {
 
   function handleItem(it) {
     if (isFountain(it.bytes)) return handleFountain(it.bytes);
-    // 系統內建引擎只給文字，遇到二進位 QR 會變亂碼或空字串：自動模式下改用 ZXing
-    if (it.native && $('engineSel').value === 'auto' && !forceZxing &&
+    // 系統內建引擎只給文字，遇到二進位 QR 會變亂碼或空字串：自動換回 ZXing
+    if (it.native &&
         (!it.text || /[\u0000-\u0008\u000E-\u001F�]/.test(it.text))) {
-      forceZxing = true;
+      $('engineSel').value = 'zxing';
       switchEngine('偵測到二進位 QR，已改用 ZXing 引擎');
       return false;
     }
@@ -455,7 +456,7 @@ var LT = (function () {
     setTimeout(function () {
       pickEngine().then(function () {
         running = true; fpsT = 0;
-        showCam(note);
+        showCam(note || nativeNote);
         loop();
       }).catch(function (e) {
         $('camInfo').innerHTML = '<span class="err">切換引擎失敗：' + (e && e.message || e) + '</span>';
@@ -498,7 +499,7 @@ var LT = (function () {
     var busy = (cur && cur.count) || (ft && ft.rank && !ft.done);
     if (!busy || confirm('清除已收到的資料？')) resetAll();
   };
-  $('engineSel').onchange = function () { forceZxing = false; if (running) switchEngine(''); };
+  $('engineSel').onchange = function () { nativeNote = ''; if (running) switchEngine(''); };
   $('copyBtn').onclick = function () {
     var t = $('plain');
     if (navigator.clipboard) navigator.clipboard.writeText(t.value);
