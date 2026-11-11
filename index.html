@@ -57,6 +57,7 @@
   <div class="card">
     <div class="status" id="status">尚未收到資料</div>
     <div id="bar"><div id="barIn"></div></div>
+    <div class="sub" id="timeInfo" style="font-size:15px;color:#e4e6eb"></div>
     <div class="sub" id="missing"></div>
     <div id="missBox" hidden style="margin:6px 0 10px"><div id="missList"></div></div>
     <div id="grid"></div>
@@ -143,6 +144,43 @@ var LT = (function () {
   var blobUrl = null;
   var missingText = '';
   var lastResult = null;
+
+  /* ---------------- 傳輸時間 ---------------- */
+  var tStart = 0, tEnd = 0;      // 這份傳輸收到第一張、收齊的時間 (毫秒)
+
+  function fmtDur(sec) {
+    sec = Math.max(0, Math.round(sec));
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), x = sec % 60;
+    return (h ? h + ' 小時 ' : '') + ((h || m) ? m + ' 分 ' : '') + x + ' 秒';
+  }
+  function fmtRate(bps) {
+    var kb = bps / 1024;
+    if (kb >= 1024) return (kb / 1024).toFixed(2) + ' MB/s';
+    return (kb >= 100 ? kb.toFixed(0) : kb.toFixed(1)) + ' KB/s';
+  }
+  function fmtSize(b) {
+    return b >= 1048576 ? (b / 1048576).toFixed(1) + ' MB' : (b / 1024).toFixed(b >= 102400 ? 0 : 1) + ' KB';
+  }
+  // 已收到與總共的位元組數 (頁碼模式的總量用目前每頁平均大小推估)
+  function progressBytes() {
+    if (ft) return { got: Math.min(ft.rank * ft.K, ft.len), total: ft.len };
+    if (cur && cur.count) { var got = cur.chars * 0.75; return { got: got, total: got / cur.count * cur.total }; }
+    return null;
+  }
+  function startClock() { tStart = Date.now(); tEnd = 0; $('timeInfo').textContent = ''; }
+  function tickClock() {
+    if (!tStart || tEnd) return;
+    var p = progressBytes(), el = (Date.now() - tStart) / 1000;
+    if (!p) return;
+    var txt = '已用 ' + fmtDur(el) + '｜' + fmtSize(p.got) + ' / ' + fmtSize(p.total);
+    if (el >= 1 && p.got > 0) {
+      var rate = p.got / el;
+      txt += '｜平均 ' + fmtRate(rate);
+      if (p.total > p.got) txt += '｜預估剩餘 ' + fmtDur((p.total - p.got) / rate);
+    }
+    $('timeInfo').textContent = txt;
+  }
+  setInterval(tickClock, 1000);
   var TAG = /^(\d{1,6})\/(\d{1,6})\|([^|]*)\|([A-Za-z0-9+\/=]*)$/;
 
   function crc32(bytes) {
@@ -178,6 +216,11 @@ var LT = (function () {
     a.textContent = '下載 ' + name;
     $('doneInfo').textContent = '大小 ' + bytes.length + ' Bytes | CRC32: ' + crc + note;
     $('doneBox').hidden = false;
+    if (tStart && !tEnd) {
+      tEnd = Date.now();
+      var el = Math.max(0.001, (tEnd - tStart) / 1000);
+      $('timeInfo').textContent = '傳輸時間 ' + fmtDur(el) + '｜' + fmtSize(bytes.length) + '｜平均 ' + fmtRate(bytes.length / el);
+    }
     lastResult = { name: name, bytes: bytes, crc: crc };
     if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
   }
@@ -200,13 +243,15 @@ var LT = (function () {
       var key = total + '|' + name;
       if (busyWith('tagged', key, name)) return false;
       if (!cur || cur.key !== key) {
-        cur = { key: key, name: name, total: total, parts: new Array(total), count: 0 };
+        cur = { key: key, name: name, total: total, parts: new Array(total), count: 0, chars: 0 };
         ft = null;
         buildGrid();
+        startClock();
       }
       if (cur.parts[idx - 1] !== undefined) return false;
       cur.parts[idx - 1] = m[4];
       cur.count++;
+      cur.chars += m[4].length;
       var el = $('c' + idx); if (el) el.className = 'ok';
       updateProgress();
       if (cur.count === cur.total) finishTagged();
@@ -243,6 +288,7 @@ var LT = (function () {
     $('missing').textContent = left ? ('還缺 ' + left + ' 頁，在傳送端「只補播這幾張」輸入：') : '';
     $('missList').textContent = missingText;
     $('missBox').hidden = !left;
+    tickClock();
   }
 
   function finishTagged() {
@@ -276,6 +322,7 @@ var LT = (function () {
              piv: new Array(N), rank: 0, seen: new Set(), frames: 0, done: false };
       cur = null;
       clearResult();
+      startClock();
       $('grid').innerHTML = ''; $('missing').textContent = ''; $('missBox').hidden = true; missingText = '';
     }
     if (ft.done || ft.seen.has(seed)) return false;
@@ -296,6 +343,7 @@ var LT = (function () {
     }
     $('status').textContent = '噴泉碼 — 已解出 ' + ft.rank + ' / ' + N + ' 塊（收到 ' + ft.frames + ' 張）';
     $('barIn').style.width = (ft.rank * 100 / N) + '%';
+    if (fresh && (ft.rank & 15) === 0) tickClock();
     if (ft.rank === N) {
       ft.done = true;
       $('status').textContent = '噴泉碼 — 收齊，解碼中…';
@@ -338,6 +386,7 @@ var LT = (function () {
 
   function resetAll() {
     cur = null; ft = null; plain = []; plainSeen = {};
+    tStart = 0; tEnd = 0; $('timeInfo').textContent = '';
     clearResult();
     $('grid').innerHTML = ''; $('missing').textContent = ''; $('missBox').hidden = true; missingText = '';
     $('barIn').style.width = '0';
@@ -518,7 +567,7 @@ var LT = (function () {
     state: function () {
       return { cur: cur && { name: cur.name, total: cur.total, count: cur.count },
                ft: ft && { N: ft.N, K: ft.K, rank: ft.rank, frames: ft.frames, done: ft.done },
-               plain: plain, missing: missingText, status: $('status').textContent,
+               plain: plain, missing: missingText, time: $('timeInfo').textContent, status: $('status').textContent,
                result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc },
                frames: frames, hits: hits, engine: engineName };
     },
