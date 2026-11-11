@@ -27,9 +27,9 @@
   #grid { display: flex; flex-wrap: wrap; gap: 3px; }
   #grid span { width: 26px; height: 22px; border-radius: 4px; background: #3a3b3c; color: #888; font-size: 11px; line-height: 22px; text-align: center; }
   #grid span.ok { background: #2e9d4e; color: #fff; }
+  #missList { font: bold 20px Consolas, monospace; color: #ffab40; word-break: break-all; line-height: 1.5; }
   textarea { width: 100%; background: #111; color: #ddd; border: 1px solid #444; border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 12px; }
   details { font-size: 13px; color: #ccc; line-height: 1.6; }
-  code { background: #2d2d2d; padding: 1px 5px; border-radius: 4px; color: #ffab40; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -58,9 +58,7 @@
     <div class="status" id="status">尚未收到資料</div>
     <div id="bar"><div id="barIn"></div></div>
     <div class="sub" id="missing"></div>
-    <div id="missBox" hidden style="margin:6px 0 10px">
-      <div id="missList" style="font:bold 20px Consolas,monospace;color:#ffab40;word-break:break-all;line-height:1.5"></div>
-    </div>
+    <div id="missBox" hidden style="margin:6px 0 10px"><div id="missList"></div></div>
     <div id="grid"></div>
     <div id="doneBox" hidden style="margin-top:12px">
       <a id="dl"><button class="good" id="dlBtn">下載檔案</button></a>
@@ -80,16 +78,56 @@
   <div class="card">
     <details>
       <summary>使用說明</summary>
-      1. 傳送端（<a href="sender-ie11.html" style="color:#6ab0ff">sender-ie11.html</a>，可另存到離線電腦用 IE11 開）選檔案，格式用「帶頁碼標籤」，按「自動輪播」。<br>
-      2. 本頁按「開始掃描」，鏡頭對著畫面，方格會一格一格變綠；不必管順序，漏掉的頁等下一輪輪播補上即可。<br>
-      3. 全部變綠後按「下載檔案」，並核對 CRC32 與傳送端狀態列顯示的相同。<br>
-      4. 掃不到：手機靠近一點、傳送端把「每畫面張數」降到 1 或 2、「單張容量」降到 2000 以下，或在上方換一個解碼引擎。<br>
+      1. 傳送端（<a href="sender-ie11.html" style="color:#6ab0ff">sender-ie11.html</a>，可另存到離線電腦用 IE11 開）選檔案，按「自動輪播」。<br>
+      2. 本頁按「開始掃描」，鏡頭對著畫面。<br>
+      3. <b>噴泉碼</b>（傳送端預設）：進度條會一路往前，漏掉哪幾張都沒關係，收夠了自動完成並驗證 CRC32，不用補頁。<br>
+      4. <b>帶頁碼標籤</b>：方格一格一格變綠；缺的頁碼會用橘色字列出，照打進傳送端「只補播這幾張」。<br>
+      5. 完成後按「下載檔案」。<br>
+      6. 掃不到：手機靠近一點、傳送端把輪播間隔調慢、「單張容量」調小、「每畫面張數」降到 1，或在上方換一個解碼引擎。二進位噴泉碼只有 ZXing 引擎讀得到（自動模式會自己切換）。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
   </div>
 </div>
 
 <script>
+/*LT-BEGIN*/
+/* ---- 噴泉碼共用核心：傳送端與接收端必須一字不差 ----
+   影格 = 17 位元組檔頭 + K 位元組資料
+   檔頭: 'Q' 'F' 版本(1) | 資料流 CRC32 (4) | 資料流長度 (4) | K (2) | 種子 (4)，皆為大端序
+   資料流 = 檔名長度 (2) + 檔名 UTF-8 + 檔案內容，切成 N = ceil(長度/K) 塊，最後一塊補 0
+   種子 < N：就是第「種子」塊原文；種子 >= N：由種子隨機挑出的若干塊 XOR 在一起 */
+var LT = (function () {
+  function imul(a, b) {
+    var ah = (a >>> 16) & 0xffff, al = a & 0xffff, bh = (b >>> 16) & 0xffff, bl = b & 0xffff;
+    return (al * bl + (((ah * bl + al * bh) << 16) >>> 0)) | 0;
+  }
+
+  // mulberry32：只用整數運算，各瀏覽器結果相同
+  function rng(seed) {
+    var a = seed | 0;
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      var t = imul(a ^ (a >>> 15), 1 | a);
+      t = (t + imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (t ^ (t >>> 14)) >>> 0;
+    };
+  }
+
+  // 這個種子的影格是由哪幾塊 XOR 而成 (由小到大)。
+  // 每塊各自以機率 min(1/2, 256/N) 入選；一塊都沒選到時補選一塊。
+  function indices(seed, N) {
+    if (seed < N) return [seed];
+    var next = rng(seed), out = [], i;
+    var limit = (N <= 512) ? 2147483648 : Math.floor(1099511627776 / N);
+    for (i = 0; i < N; i++) if (next() < limit) out.push(i);
+    if (!out.length) out.push(next() % N);
+    return out;
+  }
+
+  return { HEADER: 17, indices: indices };
+})();
+/*LT-END*/
+
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
@@ -97,47 +135,81 @@
   var canvas = document.createElement('canvas');
   var ctx = canvas.getContext('2d', { willReadFrequently: true });
 
-  /* ---------------- 重組狀態 ---------------- */
-  var cur = null;            // { key, name, total, parts: [], count }
+  /* ---------------- 共用 ---------------- */
+  var cur = null;            // 帶頁碼標籤：{ key, name, total, parts: [], count }
+  var ft = null;             // 噴泉碼：{ key, crc, len, K, N, W, D, piv, rank, seen, frames, done }
   var plain = [];            // 無標籤內容
   var plainSeen = {};
   var blobUrl = null;
   var missingText = '';
+  var lastResult = null;
   var TAG = /^(\d{1,6})\/(\d{1,6})\|([^|]*)\|([A-Za-z0-9+\/=]*)$/;
 
-  function crc32Hex(bytes) {
-    var t = crc32Hex.t, c, n, k, i, crc = -1;
+  function crc32(bytes) {
+    var t = crc32.t, c, n, k, i, crc = -1;
     if (!t) {
-      t = crc32Hex.t = new Int32Array(256);
+      t = crc32.t = new Int32Array(256);
       for (n = 0; n < 256; n++) { c = n; for (k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c; }
     }
     for (i = 0; i < bytes.length; i++) crc = t[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
-    return ('0000000' + ((crc ^ -1) >>> 0).toString(16).toUpperCase()).slice(-8);
+    return (crc ^ -1) >>> 0;
+  }
+  function hex8(n) { return ('0000000' + n.toString(16).toUpperCase()).slice(-8); }
+
+  function clearResult() {
+    if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
+    lastResult = null;
+    $('doneBox').hidden = true;
   }
 
+  // 另一份傳輸正在收、還沒收完時回傳 true (新的那份先忽略，避免兩份互相蓋掉)
+  function busyWith(kind, key, label) {
+    var busy = (cur && cur.count > 0 && cur.count < cur.total && !(kind === 'tagged' && cur.key === key)) ||
+               (ft && ft.rank > 0 && !ft.done && !(kind === 'fountain' && ft.key === key));
+    if (busy) $('camInfo').textContent = '掃到另一份傳輸（' + label + '），已忽略。要改收它請先按「清除重來」。';
+    return busy;
+  }
+
+  function deliver(name, bytes, note) {
+    clearResult();
+    blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+    var a = $('dl'); a.href = blobUrl; a.download = name;
+    var crc = hex8(crc32(bytes));
+    $('dlBtn').textContent = '下載 ' + name;
+    $('doneInfo').textContent = '大小 ' + bytes.length + ' Bytes | CRC32: ' + crc + note;
+    $('doneBox').hidden = false;
+    lastResult = { name: name, bytes: bytes, crc: crc };
+    if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+  }
+
+  /* ---------------- 帶頁碼標籤 ---------------- */
   // 回傳 true 表示這次有新內容
   function handleText(text) {
     if (!text) return false;
+    if (text.slice(0, 4) === 'QF1:') {
+      var bin;
+      try { bin = atob(text.slice(4)); } catch (e) { return false; }
+      var fb = new Uint8Array(bin.length);
+      for (var q = 0; q < bin.length; q++) fb[q] = bin.charCodeAt(q);
+      return handleFountain(fb);
+    }
     var m = TAG.exec(text);
     if (m) {
       var idx = parseInt(m[1], 10), total = parseInt(m[2], 10), name = m[3] || 'download.bin';
       if (idx < 1 || idx > total || total > 200000) return false;
       var key = total + '|' + name;
+      if (busyWith('tagged', key, name)) return false;
       if (!cur || cur.key !== key) {
-        // 不同的檔案：目前這份已完成或還沒開始才直接換；否則要使用者按「清除重來」
-        if (cur && cur.count > 0 && cur.count < cur.total) {
-          $('camInfo').textContent = '掃到另一個檔案（' + name + '），已忽略。要改收它請先按「清除重來」。';
-          return false;
-        }
         cur = { key: key, name: name, total: total, parts: new Array(total), count: 0 };
+        ft = null;
         buildGrid();
       }
       if (cur.parts[idx - 1] !== undefined) return false;
       cur.parts[idx - 1] = m[4];
       cur.count++;
-      markCell(idx);
+      var el = $('c' + idx); if (el) el.className = 'ok';
       updateProgress();
-      if (cur.count === cur.total) finish();
+      if (cur.count === cur.total) finishTagged();
       return true;
     }
     if (plainSeen[text]) return false;
@@ -150,15 +222,11 @@
   }
 
   function buildGrid() {
-    var g = $('grid'), html = '', i;
-    $('doneBox').hidden = true;
-    if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
-    if (cur.total <= 2000) {
-      for (i = 1; i <= cur.total; i++) html += '<span id="c' + i + '">' + i + '</span>';
-    }
-    g.innerHTML = html;
+    var html = '', i;
+    clearResult();
+    if (cur.total <= 2000) for (i = 1; i <= cur.total; i++) html += '<span id="c' + i + '">' + i + '</span>';
+    $('grid').innerHTML = html;
   }
-  function markCell(i) { var el = $('c' + i); if (el) el.className = 'ok'; }
 
   function updateProgress() {
     $('status').textContent = cur.name + ' — 已收 ' + cur.count + ' / ' + cur.total + ' 頁';
@@ -177,36 +245,108 @@
     $('missBox').hidden = !left;
   }
 
-  function finish() {
-    var b64 = cur.parts.join(''), bin, bytes, i;
-    try { bin = atob(b64); }
+  function finishTagged() {
+    var bin, bytes, i;
+    try { bin = atob(cur.parts.join('')); }
     catch (e) {
       $('status').innerHTML = '<span class="err">Base64 解碼失敗，資料可能掃錯，請按「清除重來」再收一次。</span>';
       return;
     }
     bytes = new Uint8Array(bin.length);
     for (i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
-    var a = $('dl'); a.href = blobUrl; a.download = cur.name;
-    $('dlBtn').textContent = '下載 ' + cur.name;
-    $('doneInfo').textContent = '大小 ' + bytes.length + ' Bytes | CRC32: ' + crc32Hex(bytes) + '（請與傳送端狀態列的 CRC32 核對）';
-    $('doneBox').hidden = false;
     $('status').textContent = cur.name + ' — 收齊 ' + cur.total + ' 頁，可以下載';
-    lastResult = { name: cur.name, bytes: bytes, crc: crc32Hex(bytes) };
-    if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+    deliver(cur.name, bytes, '（請與傳送端狀態列的 CRC32 核對）');
   }
-  var lastResult = null;
+
+  /* ---------------- 噴泉碼 ---------------- */
+  function isFountain(b) { return b && b.length > 17 && b[0] === 0x51 && b[1] === 0x46 && b[2] === 1; }
+
+  // 每收到一張就做一步高斯消去；rank 到 N 就能解出全部
+  function handleFountain(bytes) {
+    if (!isFountain(bytes)) return false;
+    function u32(o) { return ((bytes[o] << 24) | (bytes[o + 1] << 16) | (bytes[o + 2] << 8) | bytes[o + 3]) >>> 0; }
+    var crc = u32(3), len = u32(7), K = (bytes[11] << 8) | bytes[12], seed = u32(13);
+    if (K < 1 || bytes.length !== 17 + K || len < 2) return false;
+    var N = Math.ceil(len / K);
+    if (N > 60000) return false;
+    var key = crc + ':' + len + ':' + K;
+    if (busyWith('fountain', key, '噴泉碼 ' + len + ' Bytes')) return false;
+    if (!ft || ft.key !== key) {
+      ft = { key: key, crc: crc, len: len, K: K, N: N, W: (N + 31) >>> 5, D: (K + 3) >>> 2,
+             piv: new Array(N), rank: 0, seen: new Set(), frames: 0, done: false };
+      cur = null;
+      clearResult();
+      $('grid').innerHTML = ''; $('missing').textContent = ''; $('missBox').hidden = true; missingText = '';
+    }
+    if (ft.done || ft.seen.has(seed)) return false;
+    ft.seen.add(seed); ft.frames++;
+
+    var W = ft.W, D = ft.D, idx = LT.indices(seed, N), i, w = 0, c, p, fresh = false;
+    var b = new Uint32Array(W), d = new Uint32Array(D);
+    new Uint8Array(d.buffer).set(bytes.subarray(17));
+    for (i = 0; i < idx.length; i++) b[idx[i] >>> 5] |= 1 << (idx[i] & 31);
+    for (;;) {
+      while (w < W && b[w] === 0) w++;
+      if (w >= W) break;                                  // 這張沒有新資訊
+      c = w * 32 + (31 - Math.clz32(b[w] & -b[w]));        // 最低位的未知塊
+      p = ft.piv[c];
+      if (!p) { ft.piv[c] = { b: b, d: d }; ft.rank++; fresh = true; break; }
+      for (i = w; i < W; i++) b[i] ^= p.b[i];
+      for (i = 0; i < D; i++) d[i] ^= p.d[i];
+    }
+    $('status').textContent = '噴泉碼 — 已解出 ' + ft.rank + ' / ' + N + ' 塊（收到 ' + ft.frames + ' 張）';
+    $('barIn').style.width = (ft.rank * 100 / N) + '%';
+    if (ft.rank === N) {
+      ft.done = true;
+      $('status').textContent = '噴泉碼 — 收齊，解碼中…';
+      setTimeout(finishFountain, 30);
+    }
+    return fresh;
+  }
+
+  function finishFountain() {
+    var N = ft.N, K = ft.K, W = ft.W, D = ft.D, piv = ft.piv, c, w, v, j, i, row, src;
+    // 回代：從最後一塊往前，把每一列消到只剩自己那一塊
+    for (c = N - 1; c >= 0; c--) {
+      row = piv[c];
+      for (w = c >>> 5; w < W; w++) {
+        v = row.b[w];
+        if (w === (c >>> 5)) v &= ~((2 << (c & 31)) - 1);
+        while (v) {
+          j = w * 32 + (31 - Math.clz32(v & -v));
+          src = piv[j].d;
+          for (i = 0; i < D; i++) row.d[i] ^= src[i];
+          v &= v - 1;
+        }
+      }
+    }
+    var all = new Uint8Array(N * K);
+    for (c = 0; c < N; c++) all.set(new Uint8Array(piv[c].d.buffer, 0, K), c * K);
+    var stream = all.subarray(0, ft.len);
+    if (crc32(stream) !== ft.crc) {
+      $('status').innerHTML = '<span class="err">CRC32 驗證失敗，請按「清除重來」再收一次。</span>';
+      return;
+    }
+    var nl = (stream[0] << 8) | stream[1];
+    var name = 'download.bin';
+    try { name = new TextDecoder().decode(stream.subarray(2, 2 + nl)) || name; } catch (e) {}
+    var file = stream.slice(2 + nl);
+    ft.piv = null;      // 釋放記憶體
+    $('status').textContent = name + ' — 收齊（共收 ' + ft.frames + ' 張，原文 ' + N + ' 塊），可以下載';
+    deliver(name, file, '｜傳輸 CRC32 驗證通過');
+  }
 
   function resetAll() {
-    cur = null; plain = []; plainSeen = {}; lastResult = null;
-    if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
-    $('grid').innerHTML = ''; $('missing').textContent = ''; $('missBox').hidden = true; missingText = ''; $('barIn').style.width = '0';
+    cur = null; ft = null; plain = []; plainSeen = {};
+    clearResult();
+    $('grid').innerHTML = ''; $('missing').textContent = ''; $('missBox').hidden = true; missingText = '';
+    $('barIn').style.width = '0';
     $('status').textContent = '尚未收到資料';
-    $('doneBox').hidden = true; $('textCard').hidden = true; $('plain').value = '';
+    $('textCard').hidden = true; $('plain').value = '';
   }
 
   /* ---------------- 解碼引擎 ---------------- */
-  var nativeDet = null, zxingReady = null, engineName = '';
+  var nativeDet = null, zxingReady = null, engineName = '', forceZxing = false;
 
   function loadZxing() {
     if (zxingReady) return zxingReady;
@@ -230,7 +370,7 @@
   function pickEngine() {
     var want = $('engineSel').value;
     var p = Promise.resolve(false);
-    if (want !== 'zxing' && 'BarcodeDetector' in window) {
+    if (want !== 'zxing' && !(want === 'auto' && forceZxing) && 'BarcodeDetector' in window) {
       p = BarcodeDetector.getSupportedFormats().then(function (f) {
         if (f.indexOf('qr_code') < 0) return false;
         nativeDet = new BarcodeDetector({ formats: ['qr_code'] });
@@ -244,13 +384,13 @@
     });
   }
 
-  // 回傳這一格影像裡所有 QR 的文字
+  // 回傳這一格影像裡所有 QR：[{ text, bytes }]
   function decodeFrame() {
     var w = video.videoWidth, h = video.videoHeight;
     if (!w || !h) return Promise.resolve([]);
     if (nativeDet) {
       return nativeDet.detect(video).then(function (rs) {
-        return rs.map(function (r) { return r.rawValue; });
+        return rs.map(function (r) { return { text: r.rawValue, bytes: null, native: true }; });
       });
     }
     if (canvas.width !== w) canvas.width = w;
@@ -260,33 +400,67 @@
       formats: ['QRCode'], tryHarder: true, tryRotate: false, tryInvert: false,
       tryDownscale: false, maxNumberOfSymbols: 8
     }).then(function (rs) {
-      return rs.filter(function (r) { return r.isValid; }).map(function (r) { return r.text; });
+      return rs.filter(function (r) { return r.isValid; }).map(function (r) { return { text: r.text, bytes: r.bytes, native: false }; });
     });
   }
 
+  function handleItem(it) {
+    if (isFountain(it.bytes)) return handleFountain(it.bytes);
+    // 系統內建引擎只給文字，遇到二進位 QR 會變亂碼或空字串：自動模式下改用 ZXing
+    if (it.native && $('engineSel').value === 'auto' && !forceZxing &&
+        (!it.text || /[\u0000-\u0008\u000E-\u001F�]/.test(it.text))) {
+      forceZxing = true;
+      switchEngine('偵測到二進位 QR，已改用 ZXing 引擎');
+      return false;
+    }
+    return handleText(it.text);
+  }
+
   /* ---------------- 相機與掃描迴圈 ---------------- */
-  var running = false, frames = 0, hits = 0, flashTimer = null;
+  var running = false, frames = 0, hits = 0, flashTimer = null, fpsT = 0, fpsN = 0;
 
   function flash() {
     var f = $('flash'); f.className = 'on';
     clearTimeout(flashTimer);
     flashTimer = setTimeout(function () { f.className = ''; }, 120);
-    if (navigator.vibrate) navigator.vibrate(25);
+    if (navigator.vibrate && !(ft && !ft.done)) navigator.vibrate(25);
+  }
+
+  function showCam(extra) {
+    $('camInfo').textContent = '相機 ' + video.videoWidth + 'x' + video.videoHeight + '｜引擎：' + engineName + (extra ? '｜' + extra : '');
   }
 
   function loop() {
     if (!running) return;
-    decodeFrame().then(function (texts) {
-      frames++;
+    decodeFrame().then(function (items) {
+      frames++; fpsN++;
       var fresh = false, i;
-      for (i = 0; i < texts.length; i++) if (handleText(texts[i])) fresh = true;
-      if (texts.length) hits++;
+      for (i = 0; i < items.length; i++) if (handleItem(items[i])) fresh = true;
+      if (items.length) hits++;
       if (fresh) flash();
+      var now = Date.now();
+      if (now - fpsT > 2000) {
+        if (fpsT && running) showCam('每秒解 ' + (fpsN * 1000 / (now - fpsT)).toFixed(1) + ' 格');
+        fpsT = now; fpsN = 0;
+      }
     }).catch(function (e) {
       $('camInfo').innerHTML = '<span class="err">解碼錯誤：' + (e && e.message || e) + '</span>';
     }).then(function () {
-      if (running) setTimeout(loop, nativeDet ? 30 : 0);
+      if (running) setTimeout(loop, nativeDet ? 20 : 0);
     });
+  }
+
+  function switchEngine(note) {
+    running = false;
+    setTimeout(function () {
+      pickEngine().then(function () {
+        running = true; fpsT = 0;
+        showCam(note);
+        loop();
+      }).catch(function (e) {
+        $('camInfo').innerHTML = '<span class="err">切換引擎失敗：' + (e && e.message || e) + '</span>';
+      });
+    }, 200);
   }
 
   function getStream() {
@@ -296,7 +470,7 @@
     }
     return navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } }
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
     });
   }
 
@@ -310,7 +484,7 @@
     }).then(pickEngine).then(function () {
       running = true;
       $('startBtn').textContent = '掃描中';
-      $('camInfo').textContent = '相機 ' + video.videoWidth + 'x' + video.videoHeight + '｜引擎：' + engineName;
+      showCam('');
       if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(function () {});
       loop();
     }).catch(function (e) {
@@ -320,18 +494,11 @@
   }
 
   $('startBtn').onclick = start;
-  $('resetBtn').onclick = function () { if (!cur || !cur.count || confirm('清除已收到的頁？')) resetAll(); };
-  $('engineSel').onchange = function () {
-    if (!running) return;
-    running = false;
-    setTimeout(function () {
-      pickEngine().then(function () {
-        running = true;
-        $('camInfo').textContent = '相機 ' + video.videoWidth + 'x' + video.videoHeight + '｜引擎：' + engineName;
-        loop();
-      });
-    }, 300);
+  $('resetBtn').onclick = function () {
+    var busy = (cur && cur.count) || (ft && ft.rank && !ft.done);
+    if (!busy || confirm('清除已收到的資料？')) resetAll();
   };
+  $('engineSel').onchange = function () { forceZxing = false; if (running) switchEngine(''); };
   $('copyBtn').onclick = function () {
     var t = $('plain');
     if (navigator.clipboard) navigator.clipboard.writeText(t.value);
@@ -346,8 +513,14 @@
   };
 
   window.__rx = {
-    handleText: handleText, reset: resetAll,
-    state: function () { return { cur: cur && { name: cur.name, total: cur.total, count: cur.count }, plain: plain, result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc }, frames: frames, hits: hits, missing: missingText, engine: engineName }; },
+    handleText: handleText, handleFountain: handleFountain, handleItem: handleItem, reset: resetAll,
+    state: function () {
+      return { cur: cur && { name: cur.name, total: cur.total, count: cur.count },
+               ft: ft && { N: ft.N, K: ft.K, rank: ft.rank, frames: ft.frames, done: ft.done },
+               plain: plain, missing: missingText, status: $('status').textContent,
+               result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc },
+               frames: frames, hits: hits, engine: engineName };
+    },
     resultBytes: function () { return lastResult && Array.prototype.slice.call(lastResult.bytes); }
   };
 
