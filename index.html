@@ -58,6 +58,9 @@
     <div class="status" id="status">尚未收到資料</div>
     <div id="bar"><div id="barIn"></div></div>
     <div class="sub" id="missing"></div>
+    <div id="missBox" hidden style="margin:6px 0 10px">
+      <div id="missList" style="font:bold 20px Consolas,monospace;color:#ffab40;word-break:break-all;line-height:1.5"></div>
+    </div>
     <div id="grid"></div>
     <div id="doneBox" hidden style="margin-top:12px">
       <a id="dl"><button class="good" id="dlBtn">下載檔案</button></a>
@@ -99,6 +102,7 @@
   var plain = [];            // 無標籤內容
   var plainSeen = {};
   var blobUrl = null;
+  var missingText = '';
   var TAG = /^(\d{1,6})\/(\d{1,6})\|([^|]*)\|([A-Za-z0-9+\/=]*)$/;
 
   function crc32Hex(bytes) {
@@ -159,10 +163,18 @@
   function updateProgress() {
     $('status').textContent = cur.name + ' — 已收 ' + cur.count + ' / ' + cur.total + ' 頁';
     $('barIn').style.width = (cur.count * 100 / cur.total) + '%';
-    var miss = [], i;
-    for (i = 0; i < cur.total && miss.length < 30; i++) if (cur.parts[i] === undefined) miss.push(i + 1);
+    // 缺頁寫成「7,12,19-22」，可以直接照打進傳送端的「只補播這幾張」
+    var ranges = [], i, a = 0;
+    for (i = 1; i <= cur.total + 1; i++) {
+      var gap = i <= cur.total && cur.parts[i - 1] === undefined;
+      if (gap && !a) a = i;
+      if (!gap && a) { ranges.push(a === i - 1 ? String(a) : a + '-' + (i - 1)); a = 0; }
+    }
     var left = cur.total - cur.count;
-    $('missing').textContent = left ? ('還缺 ' + left + ' 頁：' + miss.join('、') + (left > miss.length ? ' …' : '')) : '';
+    missingText = ranges.join(',');
+    $('missing').textContent = left ? ('還缺 ' + left + ' 頁，在傳送端「只補播這幾張」輸入：') : '';
+    $('missList').textContent = missingText;
+    $('missBox').hidden = !left;
   }
 
   function finish() {
@@ -188,7 +200,7 @@
   function resetAll() {
     cur = null; plain = []; plainSeen = {}; lastResult = null;
     if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
-    $('grid').innerHTML = ''; $('missing').textContent = ''; $('barIn').style.width = '0';
+    $('grid').innerHTML = ''; $('missing').textContent = ''; $('missBox').hidden = true; missingText = ''; $('barIn').style.width = '0';
     $('status').textContent = '尚未收到資料';
     $('doneBox').hidden = true; $('textCard').hidden = true; $('plain').value = '';
   }
@@ -335,7 +347,7 @@
 
   window.__rx = {
     handleText: handleText, reset: resetAll,
-    state: function () { return { cur: cur && { name: cur.name, total: cur.total, count: cur.count }, plain: plain, result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc }, frames: frames, hits: hits, engine: engineName }; },
+    state: function () { return { cur: cur && { name: cur.name, total: cur.total, count: cur.count }, plain: plain, result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc }, frames: frames, hits: hits, missing: missingText, engine: engineName }; },
     resultBytes: function () { return lastResult && Array.prototype.slice.call(lastResult.bytes); }
   };
 

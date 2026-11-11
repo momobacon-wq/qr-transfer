@@ -79,6 +79,14 @@
     </label>
   </div>
 
+  <div class="row">
+    <label>只補播這幾張:
+      <input type="text" id="onlyPages" size="28" placeholder="例如 7,12,19-22（留空＝全部）">
+    </label>
+    <button id="onlyBtn">只播這幾張</button>
+    <button id="allBtn">恢復全部</button>
+  </div>
+
   <div id="qrWrap">
     <canvas id="qrCanvas" width="360" height="360"></canvas>
   </div>
@@ -91,6 +99,7 @@
     <b>容量說明：</b>單張標準 QR Code 的物理上限是 2,953 位元組（Version 40、容錯 L），所以單張無法再放大 10 倍。本版把單張拉到上限（原版上限 1,200），再讓一個畫面同時顯示多張，預設 4 張 x 2,900 = 每畫面約 11,600 位元組，約為原版單張上限的 10 倍。<br>
     <b>掃不到時：</b>Version 40 每邊 177 格，螢幕解析度不夠時每格只剩 2 像素，手機不易對焦。請先把「每畫面張數」降到 2 或 1，再不行把「單張容量」降到 2000 或 1200；瀏覽器視窗請最大化（F11 全螢幕更好）。<br>
     <b>多張同畫面：</b>掃描順序不固定，所以請用「帶頁碼標籤」格式，手機端依 <code>頁/總頁|檔名|資料</code> 的頁碼排序後，把資料段接起來再做 Base64 解碼。選多張時「分段純 Base64」會自動改成帶頁碼標籤。<br>
+    <b>補漏頁：</b>接收網頁會列出還缺的頁碼（例如 <code>7,12,19-22</code>），把它打進上方「只補播這幾張」再按「只播這幾張」，就只輪播缺的那幾張；按「恢復全部」回到整份。<br>
     <b>小檔案（&lt; 2.1 KB）：</b>選「單張 DataURL 直出」，掃描後把 <code>data:...</code> 貼到手機瀏覽器網址列即可下載。<br>
     <b>還原：</b>手機開接收網頁，鏡頭對著本畫面輪播到收齊，網頁會自動排序、解碼、下載，並顯示 CRC32；與上方狀態列的 CRC32 相同就代表檔案完整。沒有接收網頁時，合併後的 Base64 文字可用 iOS 捷徑（Base64 解碼 → 儲存檔案）或 Termux <code>base64 -d in.txt &gt; out.zip</code> 還原。
   </div>
@@ -452,6 +461,22 @@ function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
   }
   return { chunks: chunks, fmt: fmt, note: note };
 }
+// 解析「7,12,19-22」這種頁碼字串 (1 起算)，回傳由小到大、不重複的 0 起算索引；超出範圍的略過
+function parsePageList(str, total) {
+  var seen = {}, out = [], i, m, a, b, t;
+  var parts = String(str).replace(/[\uFF0C\u3001\uFF1B;\s]+/g, ',').replace(/[\uFF5E~\u2013\u2014\uFF0D]/g, '-').split(',');
+  for (i = 0; i < parts.length; i++) {
+    m = /^(\d+)(?:-(\d+))?$/.exec(parts[i]);
+    if (!m) continue;
+    a = parseInt(m[1], 10); b = m[2] ? parseInt(m[2], 10) : a;
+    if (a > b) { t = a; a = b; b = t; }
+    if (a < 1) a = 1;
+    if (b > total) b = total;
+    for (t = a; t <= b; t++) { if (!seen[t]) { seen[t] = 1; out.push(t - 1); } }
+  }
+  out.sort(function (x, y) { return x - y; });
+  return out;
+}
 /*QR-END*/
 
 /* ================== 介面控制 ================== */
@@ -460,6 +485,7 @@ function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
   var rawFileName = 'text.txt';
   var rawFileMime = 'text/plain';
   var chunks = [];
+  var active = [];     // 目前要輪播的張 (chunks 的索引)；補播時只放缺的那幾張
   var matCache = [];
   var perScreen = 1;
   var curScreen = 0;
@@ -471,7 +497,27 @@ function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
   var canvas = $('qrCanvas');
   var ctx = canvas.getContext('2d');
 
-  function screenCount() { return Math.ceil(chunks.length / perScreen) || 1; }
+  function screenCount() { return Math.ceil(active.length / perScreen) || 1; }
+
+  function setAllActive() {
+    active = [];
+    for (var i = 0; i < chunks.length; i++) active.push(i);
+  }
+
+  function applyOnlyPages() {
+    if (!chunks.length) return;
+    var txt = $('onlyPages').value.replace(/^\s+|\s+$/g, '');
+    stopPlay();
+    if (!txt) {
+      setAllActive();
+    } else {
+      var list = parsePageList(txt, chunks.length);
+      if (!list.length) { alert('看不懂頁碼，請輸入像 7,12,19-22 這樣的格式（共 ' + chunks.length + ' 張）。'); return; }
+      active = list;
+    }
+    curScreen = 0;
+    updateUI();
+  }
 
   function setText(id, t) {
     var el = $(id);
@@ -520,6 +566,8 @@ function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
     buildNote = res.note;
     $('formatSel').value = res.fmt;
     matCache = [];
+    setAllActive();
+    $('onlyPages').value = '';
     rawCrc = crc32Hex(rawFileBytes);
     curScreen = 0;
     updateUI();
@@ -532,10 +580,10 @@ function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
 
   function renderScreen() {
     var first = curScreen * perScreen;
-    var last = Math.min(first + perScreen, chunks.length);
+    var last = Math.min(first + perScreen, active.length);
     var mats = [], i, nMax = 0;
     for (i = first; i < last; i++) {
-      mats.push(getMat(i));
+      mats.push(getMat(active[i]));
       if (mats[mats.length - 1].length > nMax) nMax = mats[mats.length - 1].length;
     }
     var QUIET = 4;
@@ -544,7 +592,7 @@ function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
     var availH = Math.max(300, (window.innerHeight || document.documentElement.clientHeight) - 30);
 
     // 版面用「每畫面張數」決定 (最後一個畫面張數較少時版面不跳動)，挑每格像素最大的排法
-    var slots = Math.min(perScreen, chunks.length);
+    var slots = Math.min(perScreen, active.length);
     var best = { scale: 0, cols: 1, rows: 1 }, cols, rows, sc;
     for (cols = 1; cols <= slots; cols++) {
       rows = Math.ceil(slots / cols);
@@ -585,10 +633,13 @@ function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
     try { info = renderScreen(); }
     catch (err) { alert(err.message); return; }
     var first = curScreen * perScreen;
-    var last = Math.min(first + perScreen, chunks.length);
-    var pageTxt = (last - first > 1) ? ('第 ' + (first + 1) + '–' + last + ' / ' + chunks.length + ' 張') : ('第 ' + (first + 1) + ' / ' + chunks.length + ' 張');
-    setText('statusText', rawFileName + ' — ' + pageTxt + '（畫面 ' + (curScreen + 1) + ' / ' + screenCount() + '）');
-    var sub = '原始大小: ' + rawFileBytes.length + ' Bytes | CRC32: ' + rawCrc + ' | 本張: ' + chunks[first].length + ' Bytes | QR Version ' + info.version + ' | 每格 ' + info.scale + ' 像素';
+    var last = Math.min(first + perScreen, active.length);
+    var nums = [], k;
+    for (k = first; k < last; k++) nums.push(active[k] + 1);
+    var pageTxt = '第 ' + nums.join('、') + ' 張 / 共 ' + chunks.length + ' 張';
+    var partial = (active.length < chunks.length) ? '｜補播 ' + active.length + ' 張' : '';
+    setText('statusText', rawFileName + ' — ' + pageTxt + '（畫面 ' + (curScreen + 1) + ' / ' + screenCount() + partial + '）');
+    var sub = '原始大小: ' + rawFileBytes.length + ' Bytes | CRC32: ' + rawCrc + ' | 本張: ' + chunks[active[first]].length + ' Bytes | QR Version ' + info.version + ' | 每格 ' + info.scale + ' 像素';
     if (info.scale < 3) sub += '（偏小，掃不到請減少每畫面張數或單張容量）';
     if (buildNote) sub += ' | ' + buildNote;
     setText('subInfo', sub);
@@ -627,6 +678,9 @@ function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
   $('prevBtn').onclick = prevScreen;
   $('nextBtn').onclick = nextScreen;
   $('playBtn').onclick = togglePlay;
+  $('onlyBtn').onclick = applyOnlyPages;
+  $('allBtn').onclick = function () { $('onlyPages').value = ''; applyOnlyPages(); };
+  $('onlyPages').onkeydown = function (e) { e = e || window.event; if (e.keyCode === 13) applyOnlyPages(); };
   $('chunkSizeSel').onchange = rebuildChunks;
   $('perScreenSel').onchange = rebuildChunks;
   $('formatSel').onchange = rebuildChunks;
