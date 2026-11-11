@@ -808,22 +808,26 @@ function fountainFrame(f, seed) {
     return (window.performance && performance.now) ? performance.now() : new Date().getTime();
   }
 
-  var playing = false, lastShow = 0, lastText = 0;
+  var playing = false, nextDue = 0, lastText = 0, loopTimer = null;
   var rateT = 0, rateN = 0, rateTxt = '', accEnc = 0, accDraw = 0;
-  var raf = window.requestAnimationFrame || window.msRequestAnimationFrame || null;
 
   function stopPlay() {
     playing = false;
+    if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }
     rateT = 0; rateN = 0; rateTxt = '';
     setText('playBtn', '自動輪播');
   }
 
-  // 每次螢幕更新時檢查是否該換下一個畫面；畫面來不及畫時自然變慢，不會堆積
+  // 用計時器照「理想時間表」換頁：某一次晚到，下一次的等待就縮短，平均速度維持在設定值；
+  // 電腦真的畫不完時就一張接一張畫，不累積欠帳。
+  // (不用 requestAnimationFrame：在遠端桌面或虛擬機上它的節拍可能很慢)
   function frameLoop() {
+    loopTimer = null;
     if (!playing) return;
     var now = nowMs(), ms = parseInt($('speedSel').value, 10);
-    if (now - lastShow >= ms - 8) {   // 容許半個螢幕更新週期的誤差
-      lastShow = now;
+    if (now >= nextDue - 2) {
+      nextDue += ms;
+      if (nextDue < now) nextDue = now;
       if (fountain) curScreen = ((curScreen + 2) * perScreen > MAX_SEED) ? 0 : curScreen + 1;
       else curScreen = (curScreen + 1) % screenCount();
       rateN++;
@@ -834,15 +838,10 @@ function fountainFrame(f, seed) {
         rateT = now; rateN = 0; accEnc = 0; accDraw = 0;
       }
       updateUI(false);
+      now = nowMs();
     }
-    schedule();
-  }
-
-  function schedule() {
-    var fired = false;
-    function go() { if (!fired) { fired = true; frameLoop(); } }
-    if (raf) raf.call(window, go);
-    setTimeout(go, raf ? 250 : 4);     // 視窗被遮住時 requestAnimationFrame 不會跑，用計時器保底
+    var wait = nextDue - now;
+    loopTimer = setTimeout(frameLoop, wait < 1 ? 1 : wait);
   }
 
   function togglePlay() {
@@ -851,9 +850,9 @@ function fountainFrame(f, seed) {
       updateUI(true);
     } else if (hasData()) {
       playing = true;
-      lastShow = nowMs();
+      nextDue = nowMs() + parseInt($('speedSel').value, 10);
       setText('playBtn', '暫停輪播');
-      schedule();
+      loopTimer = setTimeout(frameLoop, 1);
     }
   }
 
