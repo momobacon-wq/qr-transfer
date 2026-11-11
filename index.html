@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#18191a">
+<title>QR 傳檔接收端</title>
+<style>
+  * { box-sizing: border-box; font-family: system-ui, -apple-system, "Microsoft JhengHei", sans-serif; }
+  body { margin: 0; padding: 12px; background: #18191a; color: #e4e6eb; }
+  .wrap { max-width: 720px; margin: 0 auto; }
+  h1 { font-size: 18px; margin: 0 0 10px; text-align: center; }
+  .card { background: #242526; border-radius: 12px; padding: 12px; margin-bottom: 12px; }
+  #videoBox { position: relative; background: #000; border-radius: 10px; overflow: hidden; min-height: 180px; }
+  video { display: block; width: 100%; max-height: 62vh; object-fit: contain; }
+  #flash { position: absolute; left: 0; top: 0; right: 0; bottom: 0; border: 6px solid #45bd62; border-radius: 10px; opacity: 0; pointer-events: none; transition: opacity .25s; }
+  #flash.on { opacity: 1; transition: none; }
+  button, select { padding: 10px 14px; border-radius: 8px; border: 1px solid #444; background: #3a3b3c; color: #fff; font-size: 15px; }
+  button.primary { background: #2e89ff; border-color: #2e89ff; font-weight: bold; }
+  button.good { background: #2e9d4e; border-color: #2e9d4e; font-weight: bold; font-size: 17px; width: 100%; padding: 14px; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
+  .status { font-size: 16px; font-weight: bold; color: #45bd62; word-break: break-all; }
+  .sub { font-size: 13px; color: #b0b3b8; margin-top: 4px; word-break: break-all; }
+  .err { color: #ff6b6b; }
+  #bar { height: 10px; background: #3a3b3c; border-radius: 5px; overflow: hidden; margin: 10px 0 8px; }
+  #barIn { height: 100%; width: 0; background: #45bd62; }
+  #grid { display: flex; flex-wrap: wrap; gap: 3px; }
+  #grid span { width: 26px; height: 22px; border-radius: 4px; background: #3a3b3c; color: #888; font-size: 11px; line-height: 22px; text-align: center; }
+  #grid span.ok { background: #2e9d4e; color: #fff; }
+  textarea { width: 100%; background: #111; color: #ddd; border: 1px solid #444; border-radius: 8px; padding: 8px; font-family: Consolas, monospace; font-size: 12px; }
+  details { font-size: 13px; color: #ccc; line-height: 1.6; }
+  code { background: #2d2d2d; padding: 1px 5px; border-radius: 4px; color: #ffab40; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>QR 傳檔接收端</h1>
+
+  <div class="card">
+    <div id="videoBox">
+      <video id="video" playsinline muted autoplay></video>
+      <div id="flash"></div>
+    </div>
+    <div class="row">
+      <button class="primary" id="startBtn">開始掃描</button>
+      <button id="resetBtn">清除重來</button>
+      <select id="engineSel" title="解碼引擎">
+        <option value="auto">引擎：自動</option>
+        <option value="native">引擎：系統內建</option>
+        <option value="zxing">引擎：ZXing</option>
+      </select>
+    </div>
+    <div class="sub" id="camInfo">按「開始掃描」後允許使用相機，把鏡頭對著傳送端的 QR 畫面。</div>
+  </div>
+
+  <div class="card">
+    <div class="status" id="status">尚未收到資料</div>
+    <div id="bar"><div id="barIn"></div></div>
+    <div class="sub" id="missing"></div>
+    <div id="grid"></div>
+    <div id="doneBox" hidden style="margin-top:12px">
+      <a id="dl"><button class="good" id="dlBtn">下載檔案</button></a>
+      <div class="sub" id="doneInfo"></div>
+    </div>
+  </div>
+
+  <div class="card" id="textCard" hidden>
+    <div class="sub">沒有頁碼標籤的內容（純文字／純 Base64／DataURL），依掃到的先後排列：</div>
+    <textarea id="plain" rows="5" readonly></textarea>
+    <div class="row">
+      <button id="copyBtn">複製</button>
+      <button id="openBtn" hidden>開啟 DataURL 下載</button>
+    </div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>使用說明</summary>
+      1. 傳送端（<a href="sender-ie11.html" style="color:#6ab0ff">sender-ie11.html</a>，可另存到離線電腦用 IE11 開）選檔案，格式用「帶頁碼標籤」，按「自動輪播」。<br>
+      2. 本頁按「開始掃描」，鏡頭對著畫面，方格會一格一格變綠；不必管順序，漏掉的頁等下一輪輪播補上即可。<br>
+      3. 全部變綠後按「下載檔案」，並核對 CRC32 與傳送端狀態列顯示的相同。<br>
+      4. 掃不到：手機靠近一點、傳送端把「每畫面張數」降到 1 或 2、「單張容量」降到 2000 以下，或在上方換一個解碼引擎。<br>
+      所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
+    </details>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var $ = function (id) { return document.getElementById(id); };
+  var video = $('video');
+  var canvas = document.createElement('canvas');
+  var ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+  /* ---------------- 重組狀態 ---------------- */
+  var cur = null;            // { key, name, total, parts: [], count }
+  var plain = [];            // 無標籤內容
+  var plainSeen = {};
+  var blobUrl = null;
+  var TAG = /^(\d{1,6})\/(\d{1,6})\|([^|]*)\|([A-Za-z0-9+\/=]*)$/;
+
+  function crc32Hex(bytes) {
+    var t = crc32Hex.t, c, n, k, i, crc = -1;
+    if (!t) {
+      t = crc32Hex.t = new Int32Array(256);
+      for (n = 0; n < 256; n++) { c = n; for (k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[n] = c; }
+    }
+    for (i = 0; i < bytes.length; i++) crc = t[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+    return ('0000000' + ((crc ^ -1) >>> 0).toString(16).toUpperCase()).slice(-8);
+  }
+
+  // 回傳 true 表示這次有新內容
+  function handleText(text) {
+    if (!text) return false;
+    var m = TAG.exec(text);
+    if (m) {
+      var idx = parseInt(m[1], 10), total = parseInt(m[2], 10), name = m[3] || 'download.bin';
+      if (idx < 1 || idx > total || total > 200000) return false;
+      var key = total + '|' + name;
+      if (!cur || cur.key !== key) {
+        // 不同的檔案：目前這份已完成或還沒開始才直接換；否則要使用者按「清除重來」
+        if (cur && cur.count > 0 && cur.count < cur.total) {
+          $('camInfo').textContent = '掃到另一個檔案（' + name + '），已忽略。要改收它請先按「清除重來」。';
+          return false;
+        }
+        cur = { key: key, name: name, total: total, parts: new Array(total), count: 0 };
+        buildGrid();
+      }
+      if (cur.parts[idx - 1] !== undefined) return false;
+      cur.parts[idx - 1] = m[4];
+      cur.count++;
+      markCell(idx);
+      updateProgress();
+      if (cur.count === cur.total) finish();
+      return true;
+    }
+    if (plainSeen[text]) return false;
+    plainSeen[text] = 1;
+    plain.push(text);
+    $('textCard').hidden = false;
+    $('plain').value = plain.join(/^[A-Za-z0-9+\/=]+$/.test(text) ? '' : '\n');
+    $('openBtn').hidden = !(plain.length === 1 && /^data:/.test(text));
+    return true;
+  }
+
+  function buildGrid() {
+    var g = $('grid'), html = '', i;
+    $('doneBox').hidden = true;
+    if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
+    if (cur.total <= 2000) {
+      for (i = 1; i <= cur.total; i++) html += '<span id="c' + i + '">' + i + '</span>';
+    }
+    g.innerHTML = html;
+  }
+  function markCell(i) { var el = $('c' + i); if (el) el.className = 'ok'; }
+
+  function updateProgress() {
+    $('status').textContent = cur.name + ' — 已收 ' + cur.count + ' / ' + cur.total + ' 頁';
+    $('barIn').style.width = (cur.count * 100 / cur.total) + '%';
+    var miss = [], i;
+    for (i = 0; i < cur.total && miss.length < 30; i++) if (cur.parts[i] === undefined) miss.push(i + 1);
+    var left = cur.total - cur.count;
+    $('missing').textContent = left ? ('還缺 ' + left + ' 頁：' + miss.join('、') + (left > miss.length ? ' …' : '')) : '';
+  }
+
+  function finish() {
+    var b64 = cur.parts.join(''), bin, bytes, i;
+    try { bin = atob(b64); }
+    catch (e) {
+      $('status').innerHTML = '<span class="err">Base64 解碼失敗，資料可能掃錯，請按「清除重來」再收一次。</span>';
+      return;
+    }
+    bytes = new Uint8Array(bin.length);
+    for (i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+    blobUrl = URL.createObjectURL(new Blob([bytes], { type: 'application/octet-stream' }));
+    var a = $('dl'); a.href = blobUrl; a.download = cur.name;
+    $('dlBtn').textContent = '下載 ' + cur.name;
+    $('doneInfo').textContent = '大小 ' + bytes.length + ' Bytes | CRC32: ' + crc32Hex(bytes) + '（請與傳送端狀態列的 CRC32 核對）';
+    $('doneBox').hidden = false;
+    $('status').textContent = cur.name + ' — 收齊 ' + cur.total + ' 頁，可以下載';
+    lastResult = { name: cur.name, bytes: bytes, crc: crc32Hex(bytes) };
+    if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
+  }
+  var lastResult = null;
+
+  function resetAll() {
+    cur = null; plain = []; plainSeen = {}; lastResult = null;
+    if (blobUrl) { URL.revokeObjectURL(blobUrl); blobUrl = null; }
+    $('grid').innerHTML = ''; $('missing').textContent = ''; $('barIn').style.width = '0';
+    $('status').textContent = '尚未收到資料';
+    $('doneBox').hidden = true; $('textCard').hidden = true; $('plain').value = '';
+  }
+
+  /* ---------------- 解碼引擎 ---------------- */
+  var nativeDet = null, zxingReady = null, engineName = '';
+
+  function loadZxing() {
+    if (zxingReady) return zxingReady;
+    zxingReady = new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = 'vendor/zxing-reader.js';
+      s.onload = function () {
+        try {
+          ZXingWASM.prepareZXingModule({
+            overrides: { locateFile: function (path) { return 'vendor/' + path; } },
+            fireImmediately: true
+          }).then(resolve, reject);
+        } catch (e) { reject(e); }
+      };
+      s.onerror = function () { reject(new Error('載入 ZXing 失敗')); };
+      document.head.appendChild(s);
+    });
+    return zxingReady;
+  }
+
+  function pickEngine() {
+    var want = $('engineSel').value;
+    var p = Promise.resolve(false);
+    if (want !== 'zxing' && 'BarcodeDetector' in window) {
+      p = BarcodeDetector.getSupportedFormats().then(function (f) {
+        if (f.indexOf('qr_code') < 0) return false;
+        nativeDet = new BarcodeDetector({ formats: ['qr_code'] });
+        return true;
+      }).catch(function () { return false; });
+    }
+    return p.then(function (ok) {
+      if (ok) { engineName = '系統內建'; return; }
+      nativeDet = null;
+      return loadZxing().then(function () { engineName = 'ZXing'; });
+    });
+  }
+
+  // 回傳這一格影像裡所有 QR 的文字
+  function decodeFrame() {
+    var w = video.videoWidth, h = video.videoHeight;
+    if (!w || !h) return Promise.resolve([]);
+    if (nativeDet) {
+      return nativeDet.detect(video).then(function (rs) {
+        return rs.map(function (r) { return r.rawValue; });
+      });
+    }
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    return ZXingWASM.readBarcodes(ctx.getImageData(0, 0, w, h), {
+      formats: ['QRCode'], tryHarder: true, tryRotate: false, tryInvert: false,
+      tryDownscale: false, maxNumberOfSymbols: 8
+    }).then(function (rs) {
+      return rs.filter(function (r) { return r.isValid; }).map(function (r) { return r.text; });
+    });
+  }
+
+  /* ---------------- 相機與掃描迴圈 ---------------- */
+  var running = false, frames = 0, hits = 0, flashTimer = null;
+
+  function flash() {
+    var f = $('flash'); f.className = 'on';
+    clearTimeout(flashTimer);
+    flashTimer = setTimeout(function () { f.className = ''; }, 120);
+    if (navigator.vibrate) navigator.vibrate(25);
+  }
+
+  function loop() {
+    if (!running) return;
+    decodeFrame().then(function (texts) {
+      frames++;
+      var fresh = false, i;
+      for (i = 0; i < texts.length; i++) if (handleText(texts[i])) fresh = true;
+      if (texts.length) hits++;
+      if (fresh) flash();
+    }).catch(function (e) {
+      $('camInfo').innerHTML = '<span class="err">解碼錯誤：' + (e && e.message || e) + '</span>';
+    }).then(function () {
+      if (running) setTimeout(loop, nativeDet ? 30 : 0);
+    });
+  }
+
+  function getStream() {
+    if (window.__testStream) return Promise.resolve(window.__testStream);   // 自動化測試用
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      return Promise.reject(new Error('這個瀏覽器不能使用相機（需要 HTTPS 與較新的瀏覽器）'));
+    }
+    return navigator.mediaDevices.getUserMedia({
+      audio: false,
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 2560 }, height: { ideal: 1440 } }
+    });
+  }
+
+  function start() {
+    if (running) return;
+    $('startBtn').disabled = true;
+    $('camInfo').textContent = '啟動相機中…';
+    getStream().then(function (stream) {
+      video.srcObject = stream;
+      return video.play();
+    }).then(pickEngine).then(function () {
+      running = true;
+      $('startBtn').textContent = '掃描中';
+      $('camInfo').textContent = '相機 ' + video.videoWidth + 'x' + video.videoHeight + '｜引擎：' + engineName;
+      if (navigator.wakeLock) navigator.wakeLock.request('screen').catch(function () {});
+      loop();
+    }).catch(function (e) {
+      $('startBtn').disabled = false;
+      $('camInfo').innerHTML = '<span class="err">無法開始：' + (e && e.message || e) + '</span>';
+    });
+  }
+
+  $('startBtn').onclick = start;
+  $('resetBtn').onclick = function () { if (!cur || !cur.count || confirm('清除已收到的頁？')) resetAll(); };
+  $('engineSel').onchange = function () {
+    if (!running) return;
+    running = false;
+    setTimeout(function () {
+      pickEngine().then(function () {
+        running = true;
+        $('camInfo').textContent = '相機 ' + video.videoWidth + 'x' + video.videoHeight + '｜引擎：' + engineName;
+        loop();
+      });
+    }, 300);
+  };
+  $('copyBtn').onclick = function () {
+    var t = $('plain');
+    if (navigator.clipboard) navigator.clipboard.writeText(t.value);
+    else { t.select(); document.execCommand('copy'); }
+    $('copyBtn').textContent = '已複製';
+    setTimeout(function () { $('copyBtn').textContent = '複製'; }, 1200);
+  };
+  $('openBtn').onclick = function () {
+    var a = document.createElement('a');
+    a.href = plain[0]; a.download = 'download';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+
+  window.__rx = {
+    handleText: handleText, reset: resetAll,
+    state: function () { return { cur: cur && { name: cur.name, total: cur.total, count: cur.count }, plain: plain, result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc }, frames: frames, hits: hits, engine: engineName }; },
+    resultBytes: function () { return lastResult && Array.prototype.slice.call(lastResult.bytes); }
+  };
+
+  if ('serviceWorker' in navigator && location.protocol === 'https:') {
+    navigator.serviceWorker.register('sw.js').catch(function () {});
+  }
+})();
+</script>
+</body>
+</html>

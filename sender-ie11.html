@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>離線標準 QR Code 傳檔工具 (IE11 / ES5 版)</title>
+<style>
+  * { box-sizing: border-box; font-family: "Microsoft JhengHei", "Segoe UI", Arial, sans-serif; }
+  body { margin: 0; padding: 12px; background: #18191a; color: #e4e6eb; text-align: center; }
+  .container { width: 100%; background: #242526; padding: 14px; border-radius: 12px; text-align: center; }
+  h2 { margin: 0 0 8px 0; font-size: 20px; }
+  .row { margin: 8px 0; }
+  .row label, .row button, .row input { display: inline-block; margin: 4px 5px; vertical-align: middle; }
+  input, select, button, textarea { padding: 7px 10px; border-radius: 6px; border: 1px solid #444; background: #3a3b3c; color: #fff; font-size: 14px; }
+  button { cursor: pointer; font-weight: bold; }
+  button.primary { background: #2e89ff; border: 1px solid #2e89ff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #qrWrap { background: #fff; padding: 0; border-radius: 6px; display: inline-block; margin: 8px 0; max-width: 100%; overflow: auto; }
+  canvas { display: block; }
+  .status { font-size: 16px; font-weight: bold; color: #45bd62; margin: 6px 0; }
+  .sub-info { font-size: 13px; color: #b0b3b8; margin-bottom: 6px; }
+  .helper-box { text-align: left; background: #111; padding: 12px; border-radius: 8px; font-size: 13px; color: #ccc; margin-top: 12px; line-height: 1.6; }
+  code { background: #2d2d2d; padding: 2px 6px; border-radius: 4px; color: #ffab40; font-family: Consolas, monospace; word-break: break-all; }
+  textarea { width: 100%; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h2>標準黑白 QR Code 離線傳檔器（IE11 版）</h2>
+
+  <div class="row">
+    <input type="file" id="fileInput">
+    <label>單張容量:
+      <select id="chunkSizeSel">
+        <option value="450">450 位元組 (最易掃描)</option>
+        <option value="800">800 位元組</option>
+        <option value="1200">1200 位元組</option>
+        <option value="2000">2000 位元組 (大螢幕)</option>
+        <option value="2900" selected>2900 位元組 (單張 QR 上限，Version 40)</option>
+      </select>
+    </label>
+    <label>每畫面張數:
+      <select id="perScreenSel">
+        <option value="1">1 張</option>
+        <option value="2">2 張</option>
+        <option value="4" selected>4 張 (每畫面約 11,600 位元組)</option>
+        <option value="6">6 張</option>
+        <option value="8">8 張</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="row">
+    <label>編碼格式:
+      <select id="formatSel">
+        <option value="tagged" selected>帶頁碼標籤 [頁/總頁|檔名|Base64] (防漏頁、亂序可重組)</option>
+        <option value="b64">分段純 Base64 (只適合每畫面 1 張、依序掃描)</option>
+        <option value="dataurl">單張 DataURL 直出 (小檔案貼入手機瀏覽器直接下載)</option>
+        <option value="rawtext">純文字直出 (直接傳送 .txt / 腳本 / 設定檔內容)</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="statusText" class="status">請選擇檔案，或直接在下方輸入文字</div>
+  <div id="subInfo" class="sub-info">支援任意檔案（建議先壓縮）或直接貼上文字轉 QR Code</div>
+
+  <div class="row">
+    <button id="prevBtn" disabled>|&lt; 上一畫面</button>
+    <button class="primary" id="playBtn" disabled>自動輪播</button>
+    <button id="nextBtn" disabled>下一畫面 &gt;|</button>
+    <label>輪播間隔:
+      <select id="speedSel">
+        <option value="3000">3 秒/畫面</option>
+        <option value="1500" selected>1.5 秒/畫面</option>
+        <option value="800">0.8 秒/畫面</option>
+        <option value="400">0.4 秒/畫面</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="qrWrap">
+    <canvas id="qrCanvas" width="360" height="360"></canvas>
+  </div>
+
+  <div class="row">
+    <textarea id="quickText" rows="2" placeholder="或者直接在此貼上要傳到手機的文字 / Config / 金鑰，即時轉成 QR Code..."></textarea>
+  </div>
+
+  <div class="helper-box">
+    <b>容量說明：</b>單張標準 QR Code 的物理上限是 2,953 位元組（Version 40、容錯 L），所以單張無法再放大 10 倍。本版把單張拉到上限（原版上限 1,200），再讓一個畫面同時顯示多張，預設 4 張 x 2,900 = 每畫面約 11,600 位元組，約為原版單張上限的 10 倍。<br>
+    <b>掃不到時：</b>Version 40 每邊 177 格，螢幕解析度不夠時每格只剩 2 像素，手機不易對焦。請先把「每畫面張數」降到 2 或 1，再不行把「單張容量」降到 2000 或 1200；瀏覽器視窗請最大化（F11 全螢幕更好）。<br>
+    <b>多張同畫面：</b>掃描順序不固定，所以請用「帶頁碼標籤」格式，手機端依 <code>頁/總頁|檔名|資料</code> 的頁碼排序後，把資料段接起來再做 Base64 解碼。選多張時「分段純 Base64」會自動改成帶頁碼標籤。<br>
+    <b>小檔案（&lt; 2.1 KB）：</b>選「單張 DataURL 直出」，掃描後把 <code>data:...</code> 貼到手機瀏覽器網址列即可下載。<br>
+    <b>還原：</b>手機開接收網頁，鏡頭對著本畫面輪播到收齊，網頁會自動排序、解碼、下載，並顯示 CRC32；與上方狀態列的 CRC32 相同就代表檔案完整。沒有接收網頁時，合併後的 Base64 文字可用 iOS 捷徑（Base64 解碼 → 儲存檔案）或 Termux <code>base64 -d in.txt &gt; out.zip</code> 還原。
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   純 ES5 標準 ISO/IEC 18004 QR Code 產生器 (Byte Mode, Error Level L)
+   支援 Version 1 ~ 40 (最高 2953 Bytes)，無外部依賴，IE11 可執行
+===================================================================== */
+/*QR-BEGIN*/
+var QR = (function () {
+  // Version 1~40、ECC Level L：[每 Block 的 ECC 數, 群組1 Block 數, 群組1 Data 數, 群組2 Block 數, 群組2 Data 數]
+  var V_INFO = [
+    null,
+    [7, 1, 19, 0, 0], [10, 1, 34, 0, 0], [15, 1, 55, 0, 0], [20, 1, 80, 0, 0],
+    [26, 1, 108, 0, 0], [18, 2, 68, 0, 0], [20, 2, 78, 0, 0], [24, 2, 97, 0, 0],
+    [30, 2, 116, 0, 0], [18, 2, 68, 2, 69], [20, 4, 81, 0, 0], [24, 2, 92, 2, 93],
+    [26, 4, 107, 0, 0], [30, 3, 115, 1, 116], [22, 5, 87, 1, 88], [24, 5, 98, 1, 99],
+    [28, 1, 107, 5, 108], [30, 5, 120, 1, 121], [28, 3, 113, 4, 114], [28, 3, 107, 5, 108],
+    [28, 4, 116, 4, 117], [28, 2, 111, 7, 112], [30, 4, 121, 5, 122], [30, 6, 117, 4, 118],
+    [26, 8, 106, 4, 107], [28, 10, 114, 2, 115], [30, 8, 122, 4, 123],
+    [30, 3, 117, 10, 118], [30, 7, 116, 7, 117], [30, 5, 115, 10, 116], [30, 13, 115, 3, 116],
+    [30, 17, 115, 0, 0], [30, 17, 115, 1, 116], [30, 13, 115, 6, 116], [30, 12, 121, 7, 122],
+    [30, 6, 121, 14, 122], [30, 17, 122, 4, 123], [30, 4, 122, 18, 123], [30, 20, 117, 4, 118],
+    [30, 19, 118, 6, 119]
+  ];
+
+  var ALIGN_POS = [
+    null, [], [6,18], [6,22], [6,26], [6,30], [6,34],
+    [6,22,38], [6,24,42], [6,26,46], [6,28,50], [6,30,54], [6,32,58], [6,34,62],
+    [6,26,46,66], [6,26,48,70], [6,26,50,74], [6,30,54,78], [6,30,56,82], [6,30,58,86], [6,34,62,90],
+    [6,28,50,72,94], [6,26,50,74,98], [6,30,54,78,102], [6,28,54,80,106], [6,32,58,84,110], [6,30,58,86,114], [6,34,62,90,118],
+    [6,26,50,74,98,122], [6,30,54,78,102,126], [6,26,52,78,104,130], [6,30,56,82,108,134],
+    [6,34,60,86,112,138], [6,30,58,86,114,142], [6,34,62,90,118,146],
+    [6,30,54,78,102,126,150], [6,24,50,76,102,128,154], [6,28,54,80,106,132,158],
+    [6,32,58,84,110,136,162], [6,26,54,82,110,138,166], [6,30,58,86,114,142,170]
+  ];
+
+  var MAX_BYTES = 2953;
+
+  // GF(256) 運算表
+  var EXP = [], LOG = [];
+  (function () {
+    var x = 1, i;
+    for (i = 0; i < 255; i++) {
+      EXP[i] = x; LOG[x] = i;
+      x = (x << 1) ^ ((x & 0x80) ? 0x11D : 0);
+    }
+    for (i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+    LOG[0] = 0;
+  })();
+
+  var genCache = {};
+  function getGenPoly(deg) {
+    if (genCache[deg]) return genCache[deg];
+    var g = [1], i, j, k, res, f;
+    for (i = 0; i < deg; i++) {
+      f = [1, EXP[i]];
+      res = [];
+      for (j = 0; j < g.length + 1; j++) res[j] = 0;
+      for (j = 0; j < g.length; j++) {
+        for (k = 0; k < 2; k++) {
+          if (g[j] && f[k]) res[j + k] ^= EXP[LOG[g[j]] + LOG[f[k]]];
+        }
+      }
+      g = res;
+    }
+    genCache[deg] = g;
+    return g;
+  }
+
+  function rsEncode(data, ecLen) {
+    var gen = getGenPoly(ecLen);
+    var msg = [], i, j, coef, out = [];
+    for (i = 0; i < data.length; i++) msg[i] = data[i];
+    for (i = 0; i < ecLen; i++) msg[data.length + i] = 0;
+    for (i = 0; i < data.length; i++) {
+      coef = msg[i];
+      if (coef !== 0) {
+        for (j = 0; j < gen.length; j++) {
+          if (gen[j]) msg[i + j] ^= EXP[LOG[gen[j]] + LOG[coef]];
+        }
+      }
+    }
+    for (i = 0; i < ecLen; i++) out[i] = msg[data.length + i];
+    return out;
+  }
+
+  function pickVersion(byteLen) {
+    var v, info, totalData, headerBytes;
+    for (v = 1; v < V_INFO.length; v++) {
+      info = V_INFO[v];
+      totalData = info[1] * info[2] + info[3] * info[4];
+      headerBytes = (v <= 9) ? 2 : 3;
+      if (byteLen + headerBytes <= totalData) return v;
+    }
+    throw new Error('單張資料過長，請調小單張容量！');
+  }
+
+  // bytes: 0~255 的陣列或 Uint8Array；回傳 size x size 的 0/1 二維陣列 (mat[y][x])
+  function encodeBytes(bytes) {
+    var ver = pickVersion(bytes.length);
+    var info = V_INFO[ver];
+    var ecLen = info[0], g1 = info[1], d1 = info[2], g2 = info[3], d2 = info[4];
+    var totalData = g1 * d1 + g2 * d2;
+    var i, j, k, b;
+
+    // 1. 封裝 Bitstream (Byte Mode = 0100)
+    var bits = [];
+    function pushBits(val, len) {
+      for (var n = len - 1; n >= 0; n--) bits.push((val >>> n) & 1);
+    }
+    pushBits(4, 4);
+    pushBits(bytes.length, ver <= 9 ? 8 : 16);
+    for (i = 0; i < bytes.length; i++) pushBits(bytes[i], 8);
+    for (i = 0; i < 4 && bits.length < totalData * 8; i++) bits.push(0);
+    while (bits.length % 8 !== 0) bits.push(0);
+
+    var dataWords = [];
+    var usedWords = bits.length / 8;
+    for (i = 0; i < usedWords; i++) {
+      b = 0;
+      for (j = 0; j < 8; j++) b = (b << 1) | bits[i * 8 + j];
+      dataWords[i] = b;
+    }
+    var padToggle = true;
+    for (i = usedWords; i < totalData; i++) {
+      dataWords[i] = padToggle ? 0xEC : 0x11;
+      padToggle = !padToggle;
+    }
+
+    // 2. 分割 Block 並計算 RS 糾錯碼
+    var dataBlocks = [], ecBlocks = [];
+    var offset = 0, len, block;
+    for (i = 0; i < g1 + g2; i++) {
+      len = (i < g1) ? d1 : d2;
+      block = dataWords.slice(offset, offset + len);
+      offset += len;
+      dataBlocks.push(block);
+      ecBlocks.push(rsEncode(block, ecLen));
+    }
+
+    // 3. 交錯排列 (Interleave)
+    var finalWords = [];
+    var maxDataLen = Math.max(d1, d2);
+    for (i = 0; i < maxDataLen; i++) {
+      for (k = 0; k < dataBlocks.length; k++) {
+        if (i < dataBlocks[k].length) finalWords.push(dataBlocks[k][i]);
+      }
+    }
+    for (i = 0; i < ecLen; i++) {
+      for (k = 0; k < ecBlocks.length; k++) finalWords.push(ecBlocks[k][i]);
+    }
+
+    // 4. 繪製矩陣
+    var size = ver * 4 + 17;
+    var mat = [], isFunc = [], row, frow;
+    for (i = 0; i < size; i++) {
+      row = []; frow = [];
+      for (j = 0; j < size; j++) { row[j] = 0; frow[j] = 0; }
+      mat.push(row); isFunc.push(frow);
+    }
+
+    function setMod(x, y, val) { mat[y][x] = val ? 1 : 0; isFunc[y][x] = 1; }
+
+    // Finder Patterns
+    function drawFinder(ox, oy) {
+      var dx, dy, x, y, inBox, isBorder, isInner;
+      for (dy = -1; dy <= 7; dy++) {
+        for (dx = -1; dx <= 7; dx++) {
+          x = ox + dx; y = oy + dy;
+          if (x < 0 || y < 0 || x >= size || y >= size) continue;
+          inBox = (dx >= 0 && dx <= 6 && dy >= 0 && dy <= 6);
+          isBorder = (dx === 0 || dx === 6 || dy === 0 || dy === 6);
+          isInner = (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4);
+          setMod(x, y, inBox && (isBorder || isInner));
+        }
+      }
+    }
+    drawFinder(0, 0); drawFinder(size - 7, 0); drawFinder(0, size - 7);
+
+    // Timing Patterns
+    for (i = 8; i < size - 8; i++) {
+      setMod(i, 6, i % 2 === 0);
+      setMod(6, i, i % 2 === 0);
+    }
+
+    // Alignment Patterns
+    var apos = ALIGN_POS[ver], pi, pj, px, py, dx, dy;
+    for (pi = 0; pi < apos.length; pi++) {
+      for (pj = 0; pj < apos.length; pj++) {
+        py = apos[pi]; px = apos[pj];
+        if ((px === 6 && py === 6) || (px === 6 && py === size - 7) || (px === size - 7 && py === 6)) continue;
+        for (dy = -2; dy <= 2; dy++) {
+          for (dx = -2; dx <= 2; dx++) {
+            setMod(px + dx, py + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+          }
+        }
+      }
+    }
+
+    // 預留 Format 資訊區
+    for (i = 0; i < 9; i++) {
+      if (i !== 6) { setMod(8, i, 0); setMod(i, 8, 0); }
+    }
+    for (i = 0; i < 8; i++) {
+      setMod(size - 1 - i, 8, 0);
+      setMod(8, size - 1 - i, 0);
+    }
+    setMod(8, size - 8, 1); // Dark module
+
+    // Version 資訊 (Version 7 以上)
+    if (ver >= 7) {
+      var rem = ver;
+      for (i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+      var vBits = (ver << 12) | rem;
+      var bit, a, c;
+      for (i = 0; i < 18; i++) {
+        bit = (vBits >>> i) & 1;
+        a = size - 11 + (i % 3); c = Math.floor(i / 3);
+        setMod(a, c, bit); setMod(c, a, bit);
+      }
+    }
+
+    // 填入資料 Bits (Mask 0)
+    var bitIdx = 0, up = true;
+    var totalBits = finalWords.length * 8;
+    var right, vert, x, y, dark;
+    for (right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (vert = 0; vert < size; vert++) {
+        y = up ? (size - 1 - vert) : vert;
+        for (j = 0; j < 2; j++) {
+          x = right - j;
+          if (!isFunc[y][x]) {
+            dark = 0;
+            if (bitIdx < totalBits) {
+              dark = (finalWords[bitIdx >>> 3] >>> (7 - (bitIdx & 7))) & 1;
+              bitIdx++;
+            }
+            if ((x + y) % 2 === 0) dark ^= 1;
+            mat[y][x] = dark;
+          }
+        }
+      }
+      up = !up;
+    }
+
+    // 寫入 Format Info (ECC Level L、Mask 0 → 0x77C4)
+    var fmtBits = 0x77C4;
+    for (i = 0; i <= 5; i++) setMod(8, i, (fmtBits >>> i) & 1);
+    setMod(8, 7, (fmtBits >>> 6) & 1);
+    setMod(8, 8, (fmtBits >>> 7) & 1);
+    setMod(7, 8, (fmtBits >>> 8) & 1);
+    for (i = 9; i < 15; i++) setMod(14 - i, 8, (fmtBits >>> i) & 1);
+    for (i = 0; i < 8; i++) setMod(size - 1 - i, 8, (fmtBits >>> i) & 1);
+    for (i = 8; i < 15; i++) setMod(8, size - 15 + i, (fmtBits >>> i) & 1);
+
+    return mat;
+  }
+
+  return { encodeBytes: encodeBytes, MAX_BYTES: MAX_BYTES };
+})();
+
+/* ================== 切片 (與畫面無關，可單獨測試) ================== */
+function strToUtf8(str) {
+  var s, out = [], i;
+  try { s = unescape(encodeURIComponent(str)); }
+  catch (e) { s = unescape(encodeURIComponent(str.replace(/[\uD800-\uDFFF]/g, '?'))); }
+  for (i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+  return out;
+}
+
+// 整檔 CRC32 (8 位十六進位)，給接收端核對用
+function crc32Hex(bytes) {
+  var table = crc32Hex.table, c, n, k, i, crc = -1, hex;
+  if (!table) {
+    table = [];
+    for (n = 0; n < 256; n++) {
+      c = n;
+      for (k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c;
+    }
+    crc32Hex.table = table;
+  }
+  for (i = 0; i < bytes.length; i++) crc = table[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  hex = ((crc ^ -1) >>> 0).toString(16).toUpperCase();
+  while (hex.length < 8) hex = '0' + hex;
+  return hex;
+}
+
+function bytesToBase64(bytes) {
+  var parts = [], i, j, end, s;
+  for (i = 0; i < bytes.length; i += 8190) {   // 8190 是 3 的倍數，分段編碼可直接相接
+    end = Math.min(i + 8190, bytes.length);
+    s = '';
+    for (j = i; j < end; j++) s += String.fromCharCode(bytes[j]);
+    parts.push(btoa(s));
+  }
+  return parts.join('');
+}
+
+// 回傳 { chunks: [位元組陣列...], fmt: 實際使用的格式, note: 提示文字 }
+function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
+  var MAXB = QR.MAX_BYTES;
+  var chunks = [], note = '', i, b64, total, part, hdr, partLen, tries;
+  if (maxLen > MAXB) maxLen = MAXB;
+
+  if (fmt === 'dataurl') {
+    var dataUrl = strToUtf8('data:' + fileMime + ';base64,' + bytesToBase64(fileBytes));
+    if (dataUrl.length > MAXB) {
+      note = 'DataURL 長度 ' + dataUrl.length + ' 位元組，超過單張上限 ' + MAXB + '，已改用帶頁碼標籤。';
+      fmt = 'tagged';
+    } else {
+      chunks.push(dataUrl);
+      return { chunks: chunks, fmt: fmt, note: note };
+    }
+  }
+
+  if (fmt === 'b64' && perScreen > 1) {
+    note = '每畫面多張時掃描順序不固定，已改用帶頁碼標籤。';
+    fmt = 'tagged';
+  }
+
+  if (fmt === 'rawtext') {
+    // 直接切位元組，但不把一個 UTF-8 字元切成兩半
+    var pos = 0, end, back;
+    while (pos < fileBytes.length) {
+      end = Math.min(pos + maxLen, fileBytes.length);
+      back = 0;
+      while (end < fileBytes.length && back < 3 && end > pos + 1 && (fileBytes[end] & 0xC0) === 0x80) { end--; back++; }
+      part = [];
+      for (i = pos; i < end; i++) part.push(fileBytes[i]);
+      chunks.push(part);
+      pos = end;
+    }
+    return { chunks: chunks, fmt: fmt, note: note };
+  }
+
+  b64 = bytesToBase64(fileBytes);
+  if (fmt === 'tagged') {
+    var nameBytes = strToUtf8(fileName).length;
+    partLen = maxLen;
+    for (tries = 0; tries < 4; tries++) {
+      total = Math.ceil(b64.length / partLen) || 1;
+      hdr = String(total).length * 2 + 3 + nameBytes;   // "頁/總頁|檔名|"
+      if (partLen + hdr <= MAXB) break;
+      partLen = MAXB - hdr - 2;
+      if (partLen < 16) throw new Error('檔名太長，請先改短檔名。');
+    }
+    total = Math.ceil(b64.length / partLen) || 1;
+    for (i = 0; i < total; i++) {
+      chunks.push(strToUtf8((i + 1) + '/' + total + '|' + fileName + '|' + b64.substr(i * partLen, partLen)));
+    }
+  } else {
+    total = Math.ceil(b64.length / maxLen) || 1;
+    for (i = 0; i < total; i++) chunks.push(strToUtf8(b64.substr(i * maxLen, maxLen)));
+  }
+  return { chunks: chunks, fmt: fmt, note: note };
+}
+/*QR-END*/
+
+/* ================== 介面控制 ================== */
+(function () {
+  var rawFileBytes = null;
+  var rawFileName = 'text.txt';
+  var rawFileMime = 'text/plain';
+  var chunks = [];
+  var matCache = [];
+  var perScreen = 1;
+  var curScreen = 0;
+  var playTimer = null;
+  var buildNote = '';
+  var rawCrc = '';
+
+  function $(id) { return document.getElementById(id); }
+  var canvas = $('qrCanvas');
+  var ctx = canvas.getContext('2d');
+
+  function screenCount() { return Math.ceil(chunks.length / perScreen) || 1; }
+
+  function setText(id, t) {
+    var el = $(id);
+    if ('textContent' in el) el.textContent = t; else el.innerText = t;
+  }
+
+  $('fileInput').onchange = function (e) {
+    var f = (e.target || e.srcElement).files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      rawFileName = f.name;
+      rawFileMime = f.type || 'application/octet-stream';
+      rawFileBytes = new Uint8Array(reader.result);
+      $('quickText').value = '';
+      if ($('formatSel').value === 'rawtext') $('formatSel').value = 'tagged';
+      rebuildChunks();
+    };
+    reader.onerror = function () { alert('讀取檔案失敗'); };
+    reader.readAsArrayBuffer(f);
+  };
+
+  function fromTextInput() {
+    var txt = $('quickText').value;
+    if (!txt) return;
+    rawFileName = 'snippet.txt';
+    rawFileMime = 'text/plain';
+    rawFileBytes = strToUtf8(txt);
+    $('formatSel').value = 'rawtext';
+    rebuildChunks();
+  }
+
+  function rebuildChunks() {
+    if (!rawFileBytes || rawFileBytes.length === 0) return;
+    stopPlay();
+    var maxLen = parseInt($('chunkSizeSel').value, 10);
+    perScreen = parseInt($('perScreenSel').value, 10);
+    var res;
+    try {
+      res = buildChunks(rawFileBytes, rawFileName, rawFileMime, $('formatSel').value, maxLen, perScreen);
+    } catch (err) {
+      alert(err.message);
+      return;
+    }
+    chunks = res.chunks;
+    buildNote = res.note;
+    $('formatSel').value = res.fmt;
+    matCache = [];
+    rawCrc = crc32Hex(rawFileBytes);
+    curScreen = 0;
+    updateUI();
+  }
+
+  function getMat(idx) {
+    if (!matCache[idx]) matCache[idx] = QR.encodeBytes(chunks[idx]);
+    return matCache[idx];
+  }
+
+  function renderScreen() {
+    var first = curScreen * perScreen;
+    var last = Math.min(first + perScreen, chunks.length);
+    var mats = [], i, nMax = 0;
+    for (i = first; i < last; i++) {
+      mats.push(getMat(i));
+      if (mats[mats.length - 1].length > nMax) nMax = mats[mats.length - 1].length;
+    }
+    var QUIET = 4;
+    var cellMods = nMax + QUIET * 2;
+    var availW = Math.max(300, (window.innerWidth || document.documentElement.clientWidth) - 60);
+    var availH = Math.max(300, (window.innerHeight || document.documentElement.clientHeight) - 30);
+
+    // 版面用「每畫面張數」決定 (最後一個畫面張數較少時版面不跳動)，挑每格像素最大的排法
+    var slots = Math.min(perScreen, chunks.length);
+    var best = { scale: 0, cols: 1, rows: 1 }, cols, rows, sc;
+    for (cols = 1; cols <= slots; cols++) {
+      rows = Math.ceil(slots / cols);
+      sc = Math.floor(Math.min(availW / cols, availH / rows) / cellMods);
+      if (sc > best.scale) best = { scale: sc, cols: cols, rows: rows };
+    }
+    var scale = Math.min(10, Math.max(2, best.scale));
+    var cell = cellMods * scale;
+    canvas.width = best.cols * cell;
+    canvas.height = best.rows * cell;
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = '#000000';
+
+    var m, n, ox, oy, x, y, runStart, rowArr;
+    for (i = 0; i < mats.length; i++) {
+      m = mats[i]; n = m.length;
+      ox = (i % best.cols) * cell + Math.floor((cell - n * scale) / 2);
+      oy = Math.floor(i / best.cols) * cell + Math.floor((cell - n * scale) / 2);
+      for (y = 0; y < n; y++) {
+        rowArr = m[y]; runStart = -1;
+        for (x = 0; x <= n; x++) {
+          if (x < n && rowArr[x]) {
+            if (runStart < 0) runStart = x;
+          } else if (runStart >= 0) {
+            ctx.fillRect(ox + runStart * scale, oy + y * scale, (x - runStart) * scale, scale);
+            runStart = -1;
+          }
+        }
+      }
+    }
+    return { scale: scale, version: (nMax - 17) / 4 };
+  }
+
+  function updateUI() {
+    if (!chunks.length) return;
+    var info;
+    try { info = renderScreen(); }
+    catch (err) { alert(err.message); return; }
+    var first = curScreen * perScreen;
+    var last = Math.min(first + perScreen, chunks.length);
+    var pageTxt = (last - first > 1) ? ('第 ' + (first + 1) + '–' + last + ' / ' + chunks.length + ' 張') : ('第 ' + (first + 1) + ' / ' + chunks.length + ' 張');
+    setText('statusText', rawFileName + ' — ' + pageTxt + '（畫面 ' + (curScreen + 1) + ' / ' + screenCount() + '）');
+    var sub = '原始大小: ' + rawFileBytes.length + ' Bytes | CRC32: ' + rawCrc + ' | 本張: ' + chunks[first].length + ' Bytes | QR Version ' + info.version + ' | 每格 ' + info.scale + ' 像素';
+    if (info.scale < 3) sub += '（偏小，掃不到請減少每畫面張數或單張容量）';
+    if (buildNote) sub += ' | ' + buildNote;
+    setText('subInfo', sub);
+    var single = (screenCount() <= 1);
+    $('prevBtn').disabled = single;
+    $('nextBtn').disabled = single;
+    $('playBtn').disabled = single;
+  }
+
+  function prevScreen() {
+    if (!chunks.length) return;
+    curScreen = (curScreen - 1 + screenCount()) % screenCount();
+    updateUI();
+  }
+
+  function nextScreen() {
+    if (!chunks.length) return;
+    curScreen = (curScreen + 1) % screenCount();
+    updateUI();
+  }
+
+  function stopPlay() {
+    if (playTimer) { clearInterval(playTimer); playTimer = null; }
+    setText('playBtn', '自動輪播');
+  }
+
+  function togglePlay() {
+    if (playTimer) {
+      stopPlay();
+    } else {
+      playTimer = setInterval(nextScreen, parseInt($('speedSel').value, 10));
+      setText('playBtn', '暫停輪播');
+    }
+  }
+
+  $('prevBtn').onclick = prevScreen;
+  $('nextBtn').onclick = nextScreen;
+  $('playBtn').onclick = togglePlay;
+  $('chunkSizeSel').onchange = rebuildChunks;
+  $('perScreenSel').onchange = rebuildChunks;
+  $('formatSel').onchange = rebuildChunks;
+  $('speedSel').onchange = function () { if (playTimer) { stopPlay(); togglePlay(); } };
+  $('quickText').oninput = fromTextInput;
+  $('quickText').onkeyup = fromTextInput;   // IE 的 input 事件在刪除字元時不一定觸發
+  $('quickText').onpaste = function () { setTimeout(fromTextInput, 0); };
+
+  var resizeTimer = null;
+  window.onresize = function () {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () { if (chunks.length) updateUI(); }, 150);
+  };
+
+  // 預設展示一張歡迎 QR Code
+  $('quickText').value = 'Hello from Windows Server Offline QR Sender!';
+  fromTextInput();
+})();
+</script>
+</body>
+</html>
