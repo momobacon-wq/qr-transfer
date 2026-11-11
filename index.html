@@ -399,7 +399,7 @@ var LT = (function () {
     ctx.drawImage(video, 0, 0, w, h);
     return ZXingWASM.readBarcodes(ctx.getImageData(0, 0, w, h), {
       formats: ['QRCode'], tryHarder: true, tryRotate: false, tryInvert: false,
-      tryDownscale: false, maxNumberOfSymbols: 8
+      tryDownscale: false, maxNumberOfSymbols: 20
     }).then(function (rs) {
       return rs.filter(function (r) { return r.isValid; }).map(function (r) { return { text: r.text, bytes: r.bytes, native: false }; });
     });

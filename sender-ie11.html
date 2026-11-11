@@ -47,6 +47,8 @@
         <option value="4">4 張</option>
         <option value="6">6 張</option>
         <option value="8">8 張</option>
+        <option value="12">12 張</option>
+        <option value="16">16 張</option>
       </select>
     </label>
   </div>
@@ -79,6 +81,8 @@
         <option value="400">0.4 秒/畫面</option>
         <option value="200">0.2 秒/畫面</option>
         <option value="100" selected>0.1 秒/畫面</option>
+        <option value="66">0.066 秒/畫面</option>
+        <option value="50">0.05 秒/畫面</option>
       </select>
     </label>
   </div>
@@ -147,7 +151,7 @@ var QR = (function () {
   var MAX_BYTES = 2953;
 
   // GF(256) 運算表
-  var EXP = [], LOG = [];
+  var EXP = new Uint8Array(512), LOG = new Uint8Array(256);
   (function () {
     var x = 1, i;
     for (i = 0; i < 255; i++) {
@@ -155,43 +159,40 @@ var QR = (function () {
       x = (x << 1) ^ ((x & 0x80) ? 0x11D : 0);
     }
     for (i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
-    LOG[0] = 0;
   })();
 
+  // 生成多項式各係數的對數 (不含最高次的 1)；係數為 0 時記 -1
   var genCache = {};
-  function getGenPoly(deg) {
+  function genLog(deg) {
     if (genCache[deg]) return genCache[deg];
-    var g = [1], i, j, k, res, f;
+    var g = [1], i, j, res, out = [];
     for (i = 0; i < deg; i++) {
-      f = [1, EXP[i]];
       res = [];
-      for (j = 0; j < g.length + 1; j++) res[j] = 0;
+      for (j = 0; j <= g.length; j++) res[j] = 0;
       for (j = 0; j < g.length; j++) {
-        for (k = 0; k < 2; k++) {
-          if (g[j] && f[k]) res[j + k] ^= EXP[LOG[g[j]] + LOG[f[k]]];
-        }
+        res[j] ^= g[j];
+        if (g[j]) res[j + 1] ^= EXP[LOG[g[j]] + i];
       }
       g = res;
     }
-    genCache[deg] = g;
-    return g;
+    for (j = 1; j <= deg; j++) out.push(g[j] ? LOG[g[j]] : -1);
+    genCache[deg] = out;
+    return out;
   }
 
-  function rsEncode(data, ecLen) {
-    var gen = getGenPoly(ecLen);
-    var msg = [], i, j, coef, out = [];
-    for (i = 0; i < data.length; i++) msg[i] = data[i];
-    for (i = 0; i < ecLen; i++) msg[data.length + i] = 0;
-    for (i = 0; i < data.length; i++) {
-      coef = msg[i];
-      if (coef !== 0) {
-        for (j = 0; j < gen.length; j++) {
-          if (gen[j]) msg[i + j] ^= EXP[LOG[gen[j]] + LOG[coef]];
-        }
+  // 對 data[off .. off+len) 算 Reed-Solomon 糾錯碼
+  function rsEncode(data, off, len, ecLen) {
+    var gl = genLog(ecLen), ec = new Uint8Array(ecLen), i, j, f, lf;
+    for (i = 0; i < len; i++) {
+      f = data[off + i] ^ ec[0];
+      for (j = 0; j < ecLen - 1; j++) ec[j] = ec[j + 1];
+      ec[ecLen - 1] = 0;
+      if (f) {
+        lf = LOG[f];
+        for (j = 0; j < ecLen; j++) if (gl[j] >= 0) ec[j] ^= EXP[lf + gl[j]];
       }
     }
-    for (i = 0; i < ecLen; i++) out[i] = msg[data.length + i];
-    return out;
+    return ec;
   }
 
   function pickVersion(byteLen) {
@@ -205,73 +206,14 @@ var QR = (function () {
     throw new Error('單張資料過長，請調小單張容量！');
   }
 
-  // bytes: 0~255 的陣列或 Uint8Array；回傳 size x size 的 0/1 二維陣列 (mat[y][x])
-  function encodeBytes(bytes) {
-    var ver = pickVersion(bytes.length);
-    var info = V_INFO[ver];
-    var ecLen = info[0], g1 = info[1], d1 = info[2], g2 = info[3], d2 = info[4];
-    var totalData = g1 * d1 + g2 * d2;
-    var i, j, k, b;
+  // 每個 Version 的固定圖樣只算一次：base = 功能圖樣，pos = 資料格的填入順序，mk = 各資料格的遮罩 (Mask 0)
+  var tplCache = {};
+  function template(ver) {
+    if (tplCache[ver]) return tplCache[ver];
+    var size = ver * 4 + 17, i, j;
+    var base = new Uint8Array(size * size), isFunc = new Uint8Array(size * size);
+    function setMod(x, y, val) { base[y * size + x] = val ? 1 : 0; isFunc[y * size + x] = 1; }
 
-    // 1. 封裝 Bitstream (Byte Mode = 0100)
-    var bits = [];
-    function pushBits(val, len) {
-      for (var n = len - 1; n >= 0; n--) bits.push((val >>> n) & 1);
-    }
-    pushBits(4, 4);
-    pushBits(bytes.length, ver <= 9 ? 8 : 16);
-    for (i = 0; i < bytes.length; i++) pushBits(bytes[i], 8);
-    for (i = 0; i < 4 && bits.length < totalData * 8; i++) bits.push(0);
-    while (bits.length % 8 !== 0) bits.push(0);
-
-    var dataWords = [];
-    var usedWords = bits.length / 8;
-    for (i = 0; i < usedWords; i++) {
-      b = 0;
-      for (j = 0; j < 8; j++) b = (b << 1) | bits[i * 8 + j];
-      dataWords[i] = b;
-    }
-    var padToggle = true;
-    for (i = usedWords; i < totalData; i++) {
-      dataWords[i] = padToggle ? 0xEC : 0x11;
-      padToggle = !padToggle;
-    }
-
-    // 2. 分割 Block 並計算 RS 糾錯碼
-    var dataBlocks = [], ecBlocks = [];
-    var offset = 0, len, block;
-    for (i = 0; i < g1 + g2; i++) {
-      len = (i < g1) ? d1 : d2;
-      block = dataWords.slice(offset, offset + len);
-      offset += len;
-      dataBlocks.push(block);
-      ecBlocks.push(rsEncode(block, ecLen));
-    }
-
-    // 3. 交錯排列 (Interleave)
-    var finalWords = [];
-    var maxDataLen = Math.max(d1, d2);
-    for (i = 0; i < maxDataLen; i++) {
-      for (k = 0; k < dataBlocks.length; k++) {
-        if (i < dataBlocks[k].length) finalWords.push(dataBlocks[k][i]);
-      }
-    }
-    for (i = 0; i < ecLen; i++) {
-      for (k = 0; k < ecBlocks.length; k++) finalWords.push(ecBlocks[k][i]);
-    }
-
-    // 4. 繪製矩陣
-    var size = ver * 4 + 17;
-    var mat = [], isFunc = [], row, frow;
-    for (i = 0; i < size; i++) {
-      row = []; frow = [];
-      for (j = 0; j < size; j++) { row[j] = 0; frow[j] = 0; }
-      mat.push(row); isFunc.push(frow);
-    }
-
-    function setMod(x, y, val) { mat[y][x] = val ? 1 : 0; isFunc[y][x] = 1; }
-
-    // Finder Patterns
     function drawFinder(ox, oy) {
       var dx, dy, x, y, inBox, isBorder, isInner;
       for (dy = -1; dy <= 7; dy++) {
@@ -287,13 +229,11 @@ var QR = (function () {
     }
     drawFinder(0, 0); drawFinder(size - 7, 0); drawFinder(0, size - 7);
 
-    // Timing Patterns
     for (i = 8; i < size - 8; i++) {
       setMod(i, 6, i % 2 === 0);
       setMod(6, i, i % 2 === 0);
     }
 
-    // Alignment Patterns
     var apos = ALIGN_POS[ver], pi, pj, px, py, dx, dy;
     for (pi = 0; pi < apos.length; pi++) {
       for (pj = 0; pj < apos.length; pj++) {
@@ -307,54 +247,7 @@ var QR = (function () {
       }
     }
 
-    // 預留 Format 資訊區
-    for (i = 0; i < 9; i++) {
-      if (i !== 6) { setMod(8, i, 0); setMod(i, 8, 0); }
-    }
-    for (i = 0; i < 8; i++) {
-      setMod(size - 1 - i, 8, 0);
-      setMod(8, size - 1 - i, 0);
-    }
-    setMod(8, size - 8, 1); // Dark module
-
-    // Version 資訊 (Version 7 以上)
-    if (ver >= 7) {
-      var rem = ver;
-      for (i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
-      var vBits = (ver << 12) | rem;
-      var bit, a, c;
-      for (i = 0; i < 18; i++) {
-        bit = (vBits >>> i) & 1;
-        a = size - 11 + (i % 3); c = Math.floor(i / 3);
-        setMod(a, c, bit); setMod(c, a, bit);
-      }
-    }
-
-    // 填入資料 Bits (Mask 0)
-    var bitIdx = 0, up = true;
-    var totalBits = finalWords.length * 8;
-    var right, vert, x, y, dark;
-    for (right = size - 1; right >= 1; right -= 2) {
-      if (right === 6) right = 5;
-      for (vert = 0; vert < size; vert++) {
-        y = up ? (size - 1 - vert) : vert;
-        for (j = 0; j < 2; j++) {
-          x = right - j;
-          if (!isFunc[y][x]) {
-            dark = 0;
-            if (bitIdx < totalBits) {
-              dark = (finalWords[bitIdx >>> 3] >>> (7 - (bitIdx & 7))) & 1;
-              bitIdx++;
-            }
-            if ((x + y) % 2 === 0) dark ^= 1;
-            mat[y][x] = dark;
-          }
-        }
-      }
-      up = !up;
-    }
-
-    // 寫入 Format Info (ECC Level L、Mask 0 → 0x77C4)
+    // Format Info (ECC Level L、Mask 0 → 0x77C4)
     var fmtBits = 0x77C4;
     for (i = 0; i <= 5; i++) setMod(8, i, (fmtBits >>> i) & 1);
     setMod(8, 7, (fmtBits >>> 6) & 1);
@@ -363,11 +256,88 @@ var QR = (function () {
     for (i = 9; i < 15; i++) setMod(14 - i, 8, (fmtBits >>> i) & 1);
     for (i = 0; i < 8; i++) setMod(size - 1 - i, 8, (fmtBits >>> i) & 1);
     for (i = 8; i < 15; i++) setMod(8, size - 15 + i, (fmtBits >>> i) & 1);
+    setMod(8, size - 8, 1); // Dark module
 
-    return mat;
+    // Version 資訊 (Version 7 以上)
+    if (ver >= 7) {
+      var rem = ver;
+      for (i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+      var vBits = (ver << 12) | rem, bit, a, c;
+      for (i = 0; i < 18; i++) {
+        bit = (vBits >>> i) & 1;
+        a = size - 11 + (i % 3); c = Math.floor(i / 3);
+        setMod(a, c, bit); setMod(c, a, bit);
+      }
+    }
+
+    // 資料格的走訪順序
+    var pos = [], mk = [], up = true, right, vert, x, y;
+    for (right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (vert = 0; vert < size; vert++) {
+        y = up ? (size - 1 - vert) : vert;
+        for (j = 0; j < 2; j++) {
+          x = right - j;
+          if (!isFunc[y * size + x]) { pos.push(y * size + x); mk.push(((x + y) % 2 === 0) ? 1 : 0); }
+        }
+      }
+      up = !up;
+    }
+    tplCache[ver] = { size: size, base: base, pos: pos, mk: mk };
+    return tplCache[ver];
   }
 
-  return { encodeBytes: encodeBytes, MAX_BYTES: MAX_BYTES };
+  // bytes: 0~255 的陣列或 Uint8Array；回傳 { n: 邊長, m: Uint8Array(n*n)，m[y*n+x] = 0/1 }
+  function encodeFlat(bytes) {
+    var L = bytes.length, ver = pickVersion(L);
+    var info = V_INFO[ver];
+    var ecLen = info[0], g1 = info[1], d1 = info[2], g2 = info[3], d2 = info[4];
+    var totalData = g1 * d1 + g2 * d2, nb = g1 + g2;
+    var i, k, b, prev, used, p;
+
+    // 1. 資料碼字：模式 0100 + 長度 (8 或 16 bit) + 資料 + 結束符，整體錯開半個位元組
+    var dw = new Uint8Array(totalData);
+    if (ver <= 9) { dw[0] = 0x40 | (L >>> 4); p = 1; }
+    else { dw[0] = 0x40 | (L >>> 12); dw[1] = (L >>> 4) & 255; p = 2; }
+    prev = L & 15;
+    for (i = 0; i < L; i++) { b = bytes[i]; dw[p + i] = (prev << 4) | (b >>> 4); prev = b & 15; }
+    dw[p + L] = prev << 4;
+    used = p + L + 1;
+    for (i = used, k = 0; i < totalData; i++, k++) dw[i] = (k % 2 === 0) ? 0xEC : 0x11;
+
+    // 2. 分 Block 算糾錯碼，3. 交錯排列
+    var offs = [], lens = [], ecs = [], off = 0;
+    for (k = 0; k < nb; k++) {
+      lens[k] = (k < g1) ? d1 : d2;
+      offs[k] = off; off += lens[k];
+      ecs[k] = rsEncode(dw, offs[k], lens[k], ecLen);
+    }
+    var fw = new Uint8Array(totalData + nb * ecLen), maxLen = Math.max(d1, d2);
+    p = 0;
+    for (i = 0; i < maxLen; i++) for (k = 0; k < nb; k++) if (i < lens[k]) fw[p++] = dw[offs[k] + i];
+    for (i = 0; i < ecLen; i++) for (k = 0; k < nb; k++) fw[p++] = ecs[k][i];
+
+    // 4. 填進樣板
+    var t = template(ver), m = new Uint8Array(t.base), pos = t.pos, mk = t.mk;
+    var totalBits = fw.length * 8, np = pos.length;
+    for (i = 0; i < np; i++) {
+      m[pos[i]] = ((i < totalBits) ? ((fw[i >>> 3] >>> (7 - (i & 7))) & 1) : 0) ^ mk[i];
+    }
+    return { n: t.size, m: m };
+  }
+
+  // 回傳 size x size 的 0/1 二維陣列 (mat[y][x])
+  function encodeBytes(bytes) {
+    var q = encodeFlat(bytes), n = q.n, rows = [], y, x, row;
+    for (y = 0; y < n; y++) {
+      row = [];
+      for (x = 0; x < n; x++) row.push(q.m[y * n + x]);
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  return { encodeBytes: encodeBytes, encodeFlat: encodeFlat, MAX_BYTES: MAX_BYTES };
 })();
 
 /* ================== 切片 (與畫面無關，可單獨測試) ================== */
@@ -528,28 +498,34 @@ function fountainSetup(fileBytes, fileName, maxLen, textMode) {
   var stream = new Uint8Array(len);
   stream[0] = nb.length >>> 8; stream[1] = nb.length & 255;
   for (i = 0; i < nb.length; i++) stream[2 + i] = nb[i];
-  for (i = 0; i < fileBytes.length; i++) stream[2 + nb.length + i] = fileBytes[i];
+  if (fileBytes.subarray) stream.set(fileBytes, 2 + nb.length);
+  else for (i = 0; i < fileBytes.length; i++) stream[2 + nb.length + i] = fileBytes[i];
   if (maxLen > QR.MAX_BYTES) maxLen = QR.MAX_BYTES;
   var frameMax = textMode ? Math.floor((maxLen - 4) / 4) * 3 : maxLen;   // 文字模式: "QF1:" + Base64
   var K = frameMax - LT.HEADER;
   if (K > len) K = len;
   if (K < 1) throw new Error('單張容量太小');
-  return { stream: stream, len: len, K: K, N: Math.ceil(len / K), crc: parseInt(crc32Hex(stream), 16), textMode: textMode };
+  var N = Math.ceil(len / K), D = (K + 3) >>> 2;
+  // 每塊各佔 D 個 32 位元字 (尾端補 0)，之後 XOR 以字為單位
+  var words = new Uint32Array(N * D), view = new Uint8Array(words.buffer), c;
+  for (c = 0; c < N; c++) view.set(stream.subarray(c * K, Math.min((c + 1) * K, len)), c * D * 4);
+  return { words: words, len: len, K: K, N: N, D: D, crc: parseInt(crc32Hex(stream), 16), textMode: textMode };
 }
 
-// 產生指定種子的影格 (位元組陣列，可直接丟給 QR.encodeBytes)
+// 產生指定種子的影格 (位元組陣列，可直接丟給 QR 編碼)
 function fountainFrame(f, seed) {
-  var K = f.K, H = LT.HEADER, out = new Uint8Array(H + K), idx = LT.indices(seed, f.N);
-  var s = f.stream, i, j, off, end;
+  var K = f.K, D = f.D, H = LT.HEADER, out = new Uint8Array(H + K), idx = LT.indices(seed, f.N);
+  var w = f.words, acc = new Uint32Array(D), i, j, off;
   out[0] = 0x51; out[1] = 0x46; out[2] = 1;
   out[3] = (f.crc >>> 24) & 255; out[4] = (f.crc >>> 16) & 255; out[5] = (f.crc >>> 8) & 255; out[6] = f.crc & 255;
   out[7] = (f.len >>> 24) & 255; out[8] = (f.len >>> 16) & 255; out[9] = (f.len >>> 8) & 255; out[10] = f.len & 255;
   out[11] = (K >>> 8) & 255; out[12] = K & 255;
   out[13] = (seed >>> 24) & 255; out[14] = (seed >>> 16) & 255; out[15] = (seed >>> 8) & 255; out[16] = seed & 255;
   for (i = 0; i < idx.length; i++) {
-    off = idx[i] * K; end = Math.min(off + K, f.len);
-    for (j = off; j < end; j++) out[H + j - off] ^= s[j];
+    off = idx[i] * D;
+    for (j = 0; j < D; j++) acc[j] ^= w[off + j];
   }
+  out.set(new Uint8Array(acc.buffer, 0, K), H);
   if (!f.textMode) return out;
   var t = 'QF1:' + bytesToBase64(out), a = [];
   for (i = 0; i < t.length; i++) a.push(t.charCodeAt(i));
@@ -662,15 +638,16 @@ function fountainFrame(f, seed) {
   }
 
   function getMat(idx) {
-    if (!matCache[idx]) matCache[idx] = QR.encodeBytes(chunks[idx]);
+    if (chunks.length > 300) return QR.encodeFlat(chunks[idx]);   // 張數多時不快取，避免吃光記憶體
+    if (!matCache[idx]) matCache[idx] = QR.encodeFlat(chunks[idx]);
     return matCache[idx];
   }
 
-  // 目前這個畫面要顯示的 QR 矩陣
+  // 目前這個畫面要顯示的 QR ({ n, m })
   function screenMats() {
     var mats = [], i, first = curScreen * perScreen;
     if (fountain) {
-      for (i = 0; i < perScreen; i++) mats.push(QR.encodeBytes(fountainFrame(fountain, first + i)));
+      for (i = 0; i < perScreen; i++) mats.push(QR.encodeFlat(fountainFrame(fountain, first + i)));
     } else {
       var last = Math.min(first + perScreen, active.length);
       for (i = first; i < last; i++) mats.push(getMat(active[i]));
@@ -678,9 +655,68 @@ function fountainFrame(f, seed) {
     return mats;
   }
 
+  function setCrisp(c) {
+    c.imageSmoothingEnabled = false;
+    c.msImageSmoothingEnabled = false;
+    c.webkitImageSmoothingEnabled = false;
+    c.mozImageSmoothingEnabled = false;
+  }
+
+  var tmpCache = {};
+  function tmpFor(n) {
+    if (!tmpCache[n]) {
+      var cv = document.createElement('canvas');
+      cv.width = n; cv.height = n;
+      var cx = cv.getContext('2d'), img = cx.createImageData(n, n), d = img.data, i;
+      for (i = 3; i < d.length; i += 4) d[i] = 255;
+      tmpCache[n] = { cv: cv, cx: cx, img: img };
+    }
+    return tmpCache[n];
+  }
+
+  // 這個瀏覽器放大小圖時能不能保持銳利 (不能的話退回逐格畫)
+  var crisp = null;
+  function crispWorks() {
+    if (crisp !== null) return crisp;
+    try {
+      var t = tmpFor(2), d = t.img.data, c = document.createElement('canvas'), x, p;
+      d[0] = d[1] = d[2] = 0; d[4] = d[5] = d[6] = 255; d[8] = d[9] = d[10] = 255; d[12] = d[13] = d[14] = 0;
+      t.cx.putImageData(t.img, 0, 0);
+      c.width = 16; c.height = 16;
+      x = c.getContext('2d'); setCrisp(x);
+      x.drawImage(t.cv, 0, 0, 16, 16);
+      p = x.getImageData(0, 0, 16, 16).data;
+      // 交界左右各一像素：(7,3) 應全黑、(8,3) 應全白
+      crisp = (p[(3 * 16 + 7) * 4] === 0 && p[(3 * 16 + 8) * 4] === 255 && p[(12 * 16 + 7) * 4] === 255 && p[(12 * 16 + 8) * 4] === 0);
+    } catch (e) { crisp = false; }
+    return crisp;
+  }
+
+  function drawCode(q, ox, oy, scale) {
+    var n = q.n, m = q.m, i, x, y, runStart, total = n * n;
+    if (crispWorks()) {
+      var t = tmpFor(n), d = t.img.data, v, j = 0;
+      for (i = 0; i < total; i++, j += 4) { v = m[i] ? 0 : 255; d[j] = v; d[j + 1] = v; d[j + 2] = v; }
+      t.cx.putImageData(t.img, 0, 0);
+      ctx.drawImage(t.cv, 0, 0, n, n, ox, oy, n * scale, n * scale);
+      return;
+    }
+    for (y = 0; y < n; y++) {
+      runStart = -1;
+      for (x = 0; x <= n; x++) {
+        if (x < n && m[y * n + x]) {
+          if (runStart < 0) runStart = x;
+        } else if (runStart >= 0) {
+          ctx.fillRect(ox + runStart * scale, oy + y * scale, (x - runStart) * scale, scale);
+          runStart = -1;
+        }
+      }
+    }
+  }
+
   function renderScreen() {
     var mats = screenMats(), i, nMax = 0;
-    for (i = 0; i < mats.length; i++) if (mats[i].length > nMax) nMax = mats[i].length;
+    for (i = 0; i < mats.length; i++) if (mats[i].n > nMax) nMax = mats[i].n;
     var QUIET = 4;
     var cellMods = nMax + QUIET * 2;
     var availW = Math.max(300, (window.innerWidth || document.documentElement.clientWidth) - 60);
@@ -699,26 +735,15 @@ function fountainFrame(f, seed) {
     var cw = best.cols * cell, ch = best.rows * cell;
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
+    setCrisp(ctx);
     ctx.fillStyle = '#FFFFFF';
     ctx.fillRect(0, 0, cw, ch);
     ctx.fillStyle = '#000000';
-
-    var m, n, ox, oy, x, y, runStart, rowArr;
     for (i = 0; i < mats.length; i++) {
-      m = mats[i]; n = m.length;
-      ox = (i % best.cols) * cell + Math.floor((cell - n * scale) / 2);
-      oy = Math.floor(i / best.cols) * cell + Math.floor((cell - n * scale) / 2);
-      for (y = 0; y < n; y++) {
-        rowArr = m[y]; runStart = -1;
-        for (x = 0; x <= n; x++) {
-          if (x < n && rowArr[x]) {
-            if (runStart < 0) runStart = x;
-          } else if (runStart >= 0) {
-            ctx.fillRect(ox + runStart * scale, oy + y * scale, (x - runStart) * scale, scale);
-            runStart = -1;
-          }
-        }
-      }
+      drawCode(mats[i],
+        (i % best.cols) * cell + Math.floor((cell - mats[i].n * scale) / 2),
+        Math.floor(i / best.cols) * cell + Math.floor((cell - mats[i].n * scale) / 2),
+        scale);
     }
     return { scale: scale, version: (nMax - 17) / 4 };
   }
@@ -747,6 +772,7 @@ function fountainFrame(f, seed) {
     }
     sub += ' | QR Version ' + info.version + ' | 每格 ' + info.scale + ' 像素';
     if (info.scale < 3) sub += '（偏小，掃不到請減少每畫面張數或單張容量）';
+    if (playTimer !== null || rateTxt) { if (rateTxt) sub += ' | ' + rateTxt; }
     if (buildNote) sub += ' | ' + buildNote;
     setText('subInfo', sub);
     $('prevBtn').disabled = single;
@@ -770,14 +796,26 @@ function fountainFrame(f, seed) {
 
   function stopPlay() {
     if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+    rateT = 0; rateN = 0; rateTxt = '';
     setText('playBtn', '自動輪播');
   }
 
-  // 用 setTimeout 串接：電腦來不及畫的時候自然變慢，不會堆積
+  // 固定節拍：畫圖花掉的時間從等待時間扣掉；電腦來不及畫時自然變慢，不會堆積
+  function nowMs() { return new Date().getTime(); }
+  var rateT = 0, rateN = 0, rateTxt = '';
   function tick() {
+    var t0 = nowMs();
     playTimer = null;
     nextScreen();
-    if (hasData()) playTimer = setTimeout(tick, parseInt($('speedSel').value, 10));
+    if (!hasData()) return;
+    rateN++;
+    if (!rateT) { rateT = t0; rateN = 0; }
+    else if (t0 - rateT >= 2000) {
+      rateTxt = '實際每秒 ' + (rateN * 1000 / (t0 - rateT)).toFixed(1) + ' 畫面';
+      rateT = t0; rateN = 0;
+    }
+    var wait = parseInt($('speedSel').value, 10) - (nowMs() - t0);
+    playTimer = setTimeout(tick, wait < 1 ? 1 : wait);
   }
 
   function togglePlay() {
