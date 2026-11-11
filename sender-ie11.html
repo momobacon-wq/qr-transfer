@@ -544,7 +544,6 @@ function fountainFrame(f, seed) {
   var fountain = null; // 噴泉碼模式的狀態；不是噴泉碼時為 null
   var perScreen = 1;
   var curScreen = 0;
-  var playTimer = null;
   var buildNote = '';
   var rawCrc = '';
   var MAX_SEED = 2000000000;
@@ -662,6 +661,8 @@ function fountainFrame(f, seed) {
     c.mozImageSmoothingEnabled = false;
   }
 
+  // 不透明黑色在 32 位元像素裡的值 (依位元組順序而定)
+  var PX_BLACK = (new Uint8Array(new Uint32Array([1]).buffer)[0] === 1) ? 0xFF000000 : 0x000000FF;
   var tmpCache = {};
   function tmpFor(n) {
     if (!tmpCache[n]) {
@@ -669,7 +670,9 @@ function fountainFrame(f, seed) {
       cv.width = n; cv.height = n;
       var cx = cv.getContext('2d'), img = cx.createImageData(n, n), d = img.data, i;
       for (i = 3; i < d.length; i += 4) d[i] = 255;
-      tmpCache[n] = { cv: cv, cx: cx, img: img };
+      var u32 = null;
+      try { if (d.buffer && d.buffer.byteLength === n * n * 4) u32 = new Uint32Array(d.buffer); } catch (e) { u32 = null; }
+      tmpCache[n] = { cv: cv, cx: cx, img: img, u32: u32 };
     }
     return tmpCache[n];
   }
@@ -695,8 +698,9 @@ function fountainFrame(f, seed) {
   function drawCode(q, ox, oy, scale) {
     var n = q.n, m = q.m, i, x, y, runStart, total = n * n;
     if (crispWorks()) {
-      var t = tmpFor(n), d = t.img.data, v, j = 0;
-      for (i = 0; i < total; i++, j += 4) { v = m[i] ? 0 : 255; d[j] = v; d[j + 1] = v; d[j + 2] = v; }
+      var t = tmpFor(n), d = t.img.data, u = t.u32, v, j = 0;
+      if (u) { for (i = 0; i < total; i++) u[i] = m[i] ? PX_BLACK : 0xFFFFFFFF; }
+      else { for (i = 0; i < total; i++, j += 4) { v = m[i] ? 0 : 255; d[j] = v; d[j + 1] = v; d[j + 2] = v; } }
       t.cx.putImageData(t.img, 0, 0);
       ctx.drawImage(t.cv, 0, 0, n, n, ox, oy, n * scale, n * scale);
       return;
@@ -715,7 +719,9 @@ function fountainFrame(f, seed) {
   }
 
   function renderScreen() {
+    var tA = nowMs();
     var mats = screenMats(), i, nMax = 0;
+    var tB = nowMs();
     for (i = 0; i < mats.length; i++) if (mats[i].n > nMax) nMax = mats[i].n;
     var QUIET = 4;
     var cellMods = nMax + QUIET * 2;
@@ -745,14 +751,18 @@ function fountainFrame(f, seed) {
         Math.floor(i / best.cols) * cell + Math.floor((cell - mats[i].n * scale) / 2),
         scale);
     }
+    accEnc += tB - tA; accDraw += nowMs() - tB;
     return { scale: scale, version: (nMax - 17) / 4 };
   }
 
-  function updateUI() {
+  function updateUI(force) {
     if (!hasData()) return;
     var info;
     try { info = renderScreen(); }
     catch (err) { stopPlay(); alert(err.message); return; }
+    var tn = nowMs();
+    if (playing && !force && tn - lastText < 300) return;
+    lastText = tn;
     var first = curScreen * perScreen, sub, single;
     if (fountain) {
       var range = (perScreen > 1) ? ((first + 1) + '–' + (first + perScreen)) : String(first + 1);
@@ -772,7 +782,7 @@ function fountainFrame(f, seed) {
     }
     sub += ' | QR Version ' + info.version + ' | 每格 ' + info.scale + ' 像素';
     if (info.scale < 3) sub += '（偏小，掃不到請減少每畫面張數或單張容量）';
-    if (playTimer !== null || rateTxt) { if (rateTxt) sub += ' | ' + rateTxt; }
+    if (rateTxt) sub += ' | ' + rateTxt;
     if (buildNote) sub += ' | ' + buildNote;
     setText('subInfo', sub);
     $('prevBtn').disabled = single;
@@ -794,36 +804,56 @@ function fountainFrame(f, seed) {
     updateUI();
   }
 
+  function nowMs() {
+    return (window.performance && performance.now) ? performance.now() : new Date().getTime();
+  }
+
+  var playing = false, lastShow = 0, lastText = 0;
+  var rateT = 0, rateN = 0, rateTxt = '', accEnc = 0, accDraw = 0;
+  var raf = window.requestAnimationFrame || window.msRequestAnimationFrame || null;
+
   function stopPlay() {
-    if (playTimer) { clearTimeout(playTimer); playTimer = null; }
+    playing = false;
     rateT = 0; rateN = 0; rateTxt = '';
     setText('playBtn', '自動輪播');
   }
 
-  // 固定節拍：畫圖花掉的時間從等待時間扣掉；電腦來不及畫時自然變慢，不會堆積
-  function nowMs() { return new Date().getTime(); }
-  var rateT = 0, rateN = 0, rateTxt = '';
-  function tick() {
-    var t0 = nowMs();
-    playTimer = null;
-    nextScreen();
-    if (!hasData()) return;
-    rateN++;
-    if (!rateT) { rateT = t0; rateN = 0; }
-    else if (t0 - rateT >= 2000) {
-      rateTxt = '實際每秒 ' + (rateN * 1000 / (t0 - rateT)).toFixed(1) + ' 畫面';
-      rateT = t0; rateN = 0;
+  // 每次螢幕更新時檢查是否該換下一個畫面；畫面來不及畫時自然變慢，不會堆積
+  function frameLoop() {
+    if (!playing) return;
+    var now = nowMs(), ms = parseInt($('speedSel').value, 10);
+    if (now - lastShow >= ms - 8) {   // 容許半個螢幕更新週期的誤差
+      lastShow = now;
+      if (fountain) curScreen = ((curScreen + 2) * perScreen > MAX_SEED) ? 0 : curScreen + 1;
+      else curScreen = (curScreen + 1) % screenCount();
+      rateN++;
+      if (!rateT) { rateT = now; rateN = 0; accEnc = 0; accDraw = 0; }
+      else if (now - rateT >= 2000 && rateN > 0) {
+        rateTxt = '實際每秒 ' + (rateN * 1000 / (now - rateT)).toFixed(1) + ' 畫面（每畫面編碼 ' +
+                  (accEnc / rateN).toFixed(0) + ' ms、畫圖 ' + (accDraw / rateN).toFixed(0) + ' ms）';
+        rateT = now; rateN = 0; accEnc = 0; accDraw = 0;
+      }
+      updateUI(false);
     }
-    var wait = parseInt($('speedSel').value, 10) - (nowMs() - t0);
-    playTimer = setTimeout(tick, wait < 1 ? 1 : wait);
+    schedule();
+  }
+
+  function schedule() {
+    var fired = false;
+    function go() { if (!fired) { fired = true; frameLoop(); } }
+    if (raf) raf.call(window, go);
+    setTimeout(go, raf ? 250 : 4);     // 視窗被遮住時 requestAnimationFrame 不會跑，用計時器保底
   }
 
   function togglePlay() {
-    if (playTimer) {
+    if (playing) {
       stopPlay();
-    } else {
-      playTimer = setTimeout(tick, parseInt($('speedSel').value, 10));
+      updateUI(true);
+    } else if (hasData()) {
+      playing = true;
+      lastShow = nowMs();
       setText('playBtn', '暫停輪播');
+      schedule();
     }
   }
 
