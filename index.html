@@ -45,6 +45,10 @@
     <div class="row">
       <button class="primary" id="startBtn">開始掃描</button>
       <button id="resetBtn">清除重來</button>
+      <select id="fpsSel" title="相機每秒張數">
+        <option value="30">相機：30 張/秒</option>
+        <option value="60">相機：60 張/秒</option>
+      </select>
       <select id="engineSel" title="解碼引擎">
         <option value="auto">引擎：自動（ZXing）</option>
         <option value="native">引擎：系統內建</option>
@@ -85,8 +89,10 @@
       4. <b>帶頁碼標籤</b>：方格一格一格變綠；缺的頁碼會用橘色字列出，照打進傳送端「只補播這幾張」。<br>
       5. 完成後按「下載檔案」。<br>
       6. 掃不到：手機靠近一點、傳送端把輪播間隔調慢、「單張容量」調小、「每畫面張數」降到 1，或在上方換一個解碼引擎。「系統內建」引擎在部分 Android 上可能較快，但讀不了二進位噴泉碼，只適合文字版噴泉碼與帶頁碼標籤。<br>
+      「接收率」是手機實際讀到的張數佔傳送端播出張數的比例；偏低時把傳送端間隔調慢、或把上方相機改成 60 張/秒試試。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
+    <div class="sub" id="buildInfo">接收頁版本 2026-11-12a</div>
   </div>
 </div>
 
@@ -167,6 +173,15 @@ var LT = (function () {
     if (cur && cur.count) { var got = cur.chars * 0.75; return { got: got, total: got / cur.count * cur.total }; }
     return null;
   }
+  // 噴泉碼的種子是連號的：(最大 - 最小 + 1) 就是這段時間傳送端播出的張數
+  function rxStats(el) {
+    if (!ft || ft.frames < 2) return '';
+    var sent = ft.seedMax - ft.seedMin + 1;
+    if (sent < ft.frames) return '';
+    var t = '｜接收率 ' + (ft.frames * 100 / sent).toFixed(0) + '%';
+    if (el >= 1) t += '（傳送端每秒 ' + (sent / el).toFixed(0) + ' 張、收到每秒 ' + (ft.frames / el).toFixed(0) + ' 張）';
+    return t;
+  }
   function startClock() { tStart = Date.now(); tEnd = 0; $('timeInfo').textContent = ''; }
   function tickClock() {
     if (!tStart || tEnd) return;
@@ -178,6 +193,7 @@ var LT = (function () {
       txt += '｜平均 ' + fmtRate(rate);
       if (p.total > p.got) txt += '｜預估剩餘 ' + fmtDur((p.total - p.got) / rate);
     }
+    txt += rxStats(el);
     $('timeInfo').textContent = txt;
   }
   setInterval(tickClock, 1000);
@@ -219,7 +235,7 @@ var LT = (function () {
     if (tStart && !tEnd) {
       tEnd = Date.now();
       var el = Math.max(0.001, (tEnd - tStart) / 1000);
-      $('timeInfo').textContent = '傳輸時間 ' + fmtDur(el) + '｜' + fmtSize(bytes.length) + '｜平均 ' + fmtRate(bytes.length / el);
+      $('timeInfo').textContent = '傳輸時間 ' + fmtDur(el) + '｜' + fmtSize(bytes.length) + '｜平均 ' + fmtRate(bytes.length / el) + rxStats(el);
     }
     lastResult = { name: name, bytes: bytes, crc: crc };
     if (navigator.vibrate) navigator.vibrate([80, 60, 80]);
@@ -319,7 +335,7 @@ var LT = (function () {
     if (busyWith('fountain', key, '噴泉碼 ' + len + ' Bytes')) return false;
     if (!ft || ft.key !== key) {
       ft = { key: key, crc: crc, len: len, K: K, N: N, W: (N + 31) >>> 5, D: (K + 3) >>> 2,
-             piv: new Array(N), rank: 0, seen: new Set(), frames: 0, done: false };
+             piv: new Array(N), rank: 0, seen: new Set(), frames: 0, done: false, seedMin: seed, seedMax: seed };
       cur = null;
       clearResult();
       startClock();
@@ -327,6 +343,8 @@ var LT = (function () {
     }
     if (ft.done || ft.seen.has(seed)) return false;
     ft.seen.add(seed); ft.frames++;
+    if (seed < ft.seedMin) ft.seedMin = seed;
+    if (seed > ft.seedMax) ft.seedMax = seed;
 
     var W = ft.W, D = ft.D, idx = LT.indices(seed, N), i, w = 0, c, p, fresh = false;
     var b = new Uint32Array(W), d = new Uint32Array(D);
@@ -477,7 +495,12 @@ var LT = (function () {
   }
 
   function showCam(extra) {
-    $('camInfo').textContent = '相機 ' + video.videoWidth + 'x' + video.videoHeight + '｜引擎：' + engineName + (extra ? '｜' + extra : '');
+    var fps = '';
+    try {
+      var tr = video.srcObject && video.srcObject.getVideoTracks()[0], st = tr && tr.getSettings && tr.getSettings();
+      if (st && st.frameRate) fps = ' @' + Math.round(st.frameRate) + ' 張/秒';
+    } catch (e) {}
+    $('camInfo').textContent = '相機 ' + video.videoWidth + 'x' + video.videoHeight + fps + '｜引擎：' + engineName + (extra ? '｜' + extra : '');
   }
 
   function loop() {
@@ -520,7 +543,7 @@ var LT = (function () {
     }
     return navigator.mediaDevices.getUserMedia({
       audio: false,
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 } }
+      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: parseInt($('fpsSel').value, 10) || 30 } }
     });
   }
 
@@ -544,6 +567,23 @@ var LT = (function () {
   }
 
   $('startBtn').onclick = start;
+  try { var savedFps = localStorage.getItem('qrFps'); if (savedFps === '30' || savedFps === '60') $('fpsSel').value = savedFps; } catch (e) {}
+  $('fpsSel').onchange = function () {
+    try { localStorage.setItem('qrFps', $('fpsSel').value); } catch (e) {}
+    if (!running || window.__testStream) return;
+    // 換一個相機串流；已收到的資料不受影響
+    running = false;
+    var old = video.srcObject;
+    setTimeout(function () {
+      if (old) old.getTracks().forEach(function (t) { t.stop(); });
+      getStream().then(function (stream) { video.srcObject = stream; return video.play(); }).then(function () {
+        running = true; fpsT = 0; showCam(''); loop();
+      }).catch(function (e) {
+        $('camInfo').innerHTML = '<span class="err">相機切換失敗：' + (e && e.message || e) + '</span>';
+        $('startBtn').disabled = false; $('startBtn').textContent = '開始掃描';
+      });
+    }, 200);
+  };
   $('resetBtn').onclick = function () {
     var busy = (cur && cur.count) || (ft && ft.rank && !ft.done);
     if (!busy || confirm('清除已收到的資料？')) resetAll();
@@ -567,7 +607,7 @@ var LT = (function () {
     state: function () {
       return { cur: cur && { name: cur.name, total: cur.total, count: cur.count },
                ft: ft && { N: ft.N, K: ft.K, rank: ft.rank, frames: ft.frames, done: ft.done },
-               plain: plain, missing: missingText, time: $('timeInfo').textContent, status: $('status').textContent,
+               plain: plain, missing: missingText, rx: ft ? { min: ft.seedMin, max: ft.seedMax } : null, time: $('timeInfo').textContent, status: $('status').textContent,
                result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc },
                frames: frames, hits: hits, engine: engineName };
     },
