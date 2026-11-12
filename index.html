@@ -45,9 +45,11 @@
     <div class="row">
       <button class="primary" id="startBtn">開始掃描</button>
       <button id="resetBtn">清除重來</button>
-      <select id="fpsSel" title="相機每秒張數">
-        <option value="30">相機：30 張/秒</option>
-        <option value="60">相機：60 張/秒</option>
+      <select id="fpsSel" title="相機解析度與每秒張數">
+        <option value="1080p30">相機：1080p／30 張</option>
+        <option value="1080p60">相機：1080p／60 張</option>
+        <option value="720p60">相機：720p／60 張</option>
+        <option value="4k30">相機：4K／30 張</option>
       </select>
       <select id="engineSel" title="解碼引擎">
         <option value="auto">引擎：自動（ZXing）</option>
@@ -89,11 +91,11 @@
       4. <b>帶頁碼標籤</b>：方格一格一格變綠；缺的頁碼會用橘色字列出，照打進傳送端「只補播這幾張」。<br>
       5. 完成後按「下載檔案」。<br>
       6. 掃不到：手機靠近一點、傳送端把輪播間隔調慢、「單張容量」調小、「每畫面張數」降到 1，或在上方換一個解碼引擎。「系統內建」引擎在部分 Android 上可能較快，但讀不了二進位噴泉碼，只適合文字版噴泉碼與帶頁碼標籤。<br>
-      「接收率」是手機實際讀到的張數佔傳送端播出張數的比例；偏低時把傳送端間隔調慢、或把上方相機改成 60 張/秒試試。<br>
+      「接收率」是手機實際讀到的張數佔傳送端播出張數的比例。「收到每秒幾張」才是實際速度：換相機模式、換手機拿法（橫拿讓 QR 區域填滿畫面）時看這個數字有沒有變大。<br>
       噴泉碼會自動驗證 SHA-256（傳送端有附的話）；壓縮過的內容會自動解壓。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
-    <div class="sub" id="buildInfo">接收頁版本 2026-11-12b</div>
+    <div class="sub" id="buildInfo">接收頁版本 2026-11-12c</div>
   </div>
 </div>
 
@@ -550,6 +552,33 @@ var LT = (function () {
     });
   }
 
+  // QR 所在區域的追蹤 (只在大畫面時使用)。區域只會擴大，連續看不到 QR 才重設，
+  // 這樣偶爾才讀得到的那幾張也會留在區域裡。
+  var roi = null, roiTick = 0, roiMiss = 0;
+  function trackRoi(results, sx, sy, w, h, usedRoi) {
+    if (!results.length) {
+      if (usedRoi && ++roiMiss >= 15) { roi = null; roiMiss = 0; }
+      return;
+    }
+    roiMiss = 0;
+    var x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, i, k, p, pt, names = ['topLeft', 'topRight', 'bottomLeft', 'bottomRight'];
+    for (i = 0; i < results.length; i++) {
+      p = results[i].position;
+      if (!p) return;
+      for (k = 0; k < 4; k++) {
+        pt = p[names[k]];
+        if (!pt) return;
+        if (pt.x + sx < x0) x0 = pt.x + sx; if (pt.x + sx > x1) x1 = pt.x + sx;
+        if (pt.y + sy < y0) y0 = pt.y + sy; if (pt.y + sy > y1) y1 = pt.y + sy;
+      }
+    }
+    var mx = Math.round((x1 - x0) * 0.12) + 48, my = Math.round((y1 - y0) * 0.12) + 48;
+    x0 = Math.max(0, Math.floor(x0 - mx)); y0 = Math.max(0, Math.floor(y0 - my));
+    x1 = Math.min(w, Math.ceil(x1 + mx)); y1 = Math.min(h, Math.ceil(y1 + my));
+    if (roi) { x0 = Math.min(x0, roi.x0); y0 = Math.min(y0, roi.y0); x1 = Math.max(x1, roi.x1); y1 = Math.max(y1, roi.y1); }
+    roi = { x0: x0, y0: y0, x1: x1, y1: y1 };
+  }
+
   // 回傳這一格影像裡所有 QR：[{ text, bytes }]
   function decodeFrame() {
     var w = video.videoWidth, h = video.videoHeight;
@@ -559,14 +588,19 @@ var LT = (function () {
         return rs.map(function (r) { return { text: r.rawValue, bytes: null, native: true }; });
       });
     }
-    if (canvas.width !== w) canvas.width = w;
-    if (canvas.height !== h) canvas.height = h;
-    ctx.drawImage(video, 0, 0, w, h);
-    return ZXingWASM.readBarcodes(ctx.getImageData(0, 0, w, h), {
+    var useRoi = !!roi && w * h > 3000000 && (++roiTick % 20) !== 0;
+    var sx = 0, sy = 0, sw = w, sh = h;
+    if (useRoi) { sx = roi.x0; sy = roi.y0; sw = roi.x1 - roi.x0; sh = roi.y1 - roi.y0; }
+    if (canvas.width !== sw) canvas.width = sw;
+    if (canvas.height !== sh) canvas.height = sh;
+    ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+    return ZXingWASM.readBarcodes(ctx.getImageData(0, 0, sw, sh), {
       formats: ['QRCode'], tryHarder: true, tryRotate: false, tryInvert: false,
-      tryDownscale: false, maxNumberOfSymbols: 20
+      tryDownscale: false, maxNumberOfSymbols: 40
     }).then(function (rs) {
-      return rs.filter(function (r) { return r.isValid; }).map(function (r) { return { text: r.text, bytes: r.bytes, native: false }; });
+      var ok = rs.filter(function (r) { return r.isValid; });
+      trackRoi(ok, sx, sy, w, h, useRoi);
+      return ok.map(function (r) { return { text: r.text, bytes: r.bytes, native: false }; });
     });
   }
 
@@ -639,10 +673,17 @@ var LT = (function () {
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       return Promise.reject(new Error('這個瀏覽器不能使用相機（需要 HTTPS 與較新的瀏覽器）'));
     }
-    return navigator.mediaDevices.getUserMedia({
-      audio: false,
-      video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: parseInt($('fpsSel').value, 10) || 30 } }
-    });
+    var modes = { '1080p30': [1920, 1080, 30], '1080p60': [1920, 1080, 60], '720p60': [1280, 720, 60], '4k30': [3840, 2160, 30] };
+    var m = modes[$('fpsSel').value] || modes['1080p30'];
+    function ask(fr) {
+      return navigator.mediaDevices.getUserMedia({
+        audio: false,
+        video: { facingMode: { ideal: 'environment' }, width: { ideal: m[0] }, height: { ideal: m[1] }, frameRate: fr }
+      });
+    }
+    // 60 張：先明確要求至少 50，相機不給再退回「盡量」；實際拿到的規格會顯示在下方
+    if (m[2] > 30) return ask({ min: 50, ideal: m[2] }).catch(function () { return ask({ ideal: m[2] }); });
+    return ask({ ideal: m[2] });
   }
 
   function start() {
@@ -665,9 +706,10 @@ var LT = (function () {
   }
 
   $('startBtn').onclick = start;
-  try { var savedFps = localStorage.getItem('qrFps'); if (savedFps === '30' || savedFps === '60') $('fpsSel').value = savedFps; } catch (e) {}
+  try { var savedFps = localStorage.getItem('qrCam'); if (/^(1080p30|1080p60|720p60|4k30)$/.test(savedFps || '')) $('fpsSel').value = savedFps; } catch (e) {}
   $('fpsSel').onchange = function () {
-    try { localStorage.setItem('qrFps', $('fpsSel').value); } catch (e) {}
+    try { localStorage.setItem('qrCam', $('fpsSel').value); } catch (e) {}
+    roi = null;
     if (!running || window.__testStream) return;
     // 換一個相機串流；已收到的資料不受影響
     running = false;
@@ -708,7 +750,7 @@ var LT = (function () {
                doneInfo: $('doneInfo').textContent,
                plain: plain, missing: missingText, rx: ft ? { min: ft.seedMin, max: ft.seedMax } : null, time: $('timeInfo').textContent, status: $('status').textContent,
                result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc },
-               frames: frames, hits: hits, engine: engineName };
+               frames: frames, hits: hits, roi: roi, engine: engineName };
     },
     resultBytes: function () { return lastResult && Array.prototype.slice.call(lastResult.bytes); }
   };
