@@ -95,7 +95,7 @@
       噴泉碼會自動驗證 SHA-256（傳送端有附的話）；壓縮過的內容會自動解壓。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
-    <div class="sub" id="buildInfo">接收頁版本 2026-11-12c</div>
+    <div class="sub" id="buildInfo">接收頁版本 2026-11-12d</div>
   </div>
 </div>
 
@@ -635,8 +635,82 @@ var LT = (function () {
     $('camInfo').textContent = '相機 ' + video.videoWidth + 'x' + video.videoHeight + fps + '｜引擎：' + engineName + (extra ? '｜' + extra : '');
   }
 
+  /* ---- 大畫面 (4K)：多個背景執行緒平行解碼 ----
+     主執行緒只負責把相機畫面 (QR 所在區域) 抓下來交給空閒的執行緒；都在忙就跳過這一張。 */
+  var pool = null, poolBroken = false, poolNote = '', capId = 0;
+  var POOL_SIZE = Math.max(2, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
+
+  function poolWanted() {
+    return !nativeDet && !poolBroken && !window.__noPool && typeof Worker !== 'undefined' &&
+           video.videoWidth * video.videoHeight > 3000000;
+  }
+
+  function poolFail(msg) {
+    poolBroken = true; poolNote = '平行解碼無法使用（' + msg + '），改用單一執行緒';
+    if (pool) { pool.forEach(function (wk) { try { wk.w.terminate(); } catch (e) {} }); pool = null; }
+  }
+
+  function ensurePool() {
+    if (pool) return;
+    pool = [];
+    for (var i = 0; i < POOL_SIZE; i++) (function () {
+      var wk = { w: null, ready: false, busy: false, sx: 0, sy: 0, usedRoi: false };
+      try { wk.w = new Worker('vendor/decode-worker.js'); } catch (e) { poolFail(e.message || 'Worker'); return; }
+      wk.w.onmessage = function (ev) {
+        var d = ev.data;
+        if (d.ready) { wk.ready = true; return; }
+        if (d.fatal) { poolFail(d.fatal); return; }
+        wk.busy = false;
+        if (d.error) { poolFail(d.error); return; }
+        trackRoi(d.items, wk.sx, wk.sy, video.videoWidth, video.videoHeight, wk.usedRoi);
+        consume(d.items);
+      };
+      wk.w.onerror = function (e) { poolFail(e.message || '載入失敗'); };
+      pool.push(wk);
+    })();
+  }
+
+  // 一張影像的解碼結果進來：交給重組，更新統計
+  function consume(items) {
+    frames++; fpsN++;
+    var fresh = false, i;
+    for (i = 0; i < items.length; i++) if (handleItem({ text: items[i].text, bytes: items[i].bytes, native: false })) fresh = true;
+    if (items.length) hits++;
+    if (fresh) flash();
+    var now = Date.now();
+    if (now - fpsT > 2000) {
+      if (fpsT && running) showCam('每秒解 ' + (fpsN * 1000 / (now - fpsT)).toFixed(1) + ' 格｜' + (poolNote || ('平行解碼 x' + POOL_SIZE)));
+      fpsT = now; fpsN = 0;
+    }
+  }
+
+  function poolPump() {
+    if (!running) return;
+    if (!poolWanted()) { loop(); return; }
+    ensurePool();
+    var wk = null, i, w = video.videoWidth, h = video.videoHeight;
+    if (pool) for (i = 0; i < pool.length; i++) if (pool[i].ready && !pool[i].busy) { wk = pool[i]; break; }
+    if (wk && w && h) {
+      try {
+        var useRoi = !!roi && (++roiTick % 20) !== 0;
+        var sx = 0, sy = 0, sw = w, sh = h;
+        if (useRoi) { sx = roi.x0; sy = roi.y0; sw = roi.x1 - roi.x0; sh = roi.y1 - roi.y0; }
+        if (canvas.width !== sw) canvas.width = sw;
+        if (canvas.height !== sh) canvas.height = sh;
+        ctx.drawImage(video, sx, sy, sw, sh, 0, 0, sw, sh);
+        var img = ctx.getImageData(0, 0, sw, sh);
+        wk.busy = true; wk.sx = sx; wk.sy = sy; wk.usedRoi = useRoi;
+        wk.w.postMessage({ id: ++capId, buf: img.data.buffer, w: sw, h: sh }, [img.data.buffer]);
+      } catch (e) { if (wk) wk.busy = false; poolFail(e.message || '抓圖失敗'); }
+    }
+    // 有新畫面才再抓；瀏覽器不支援時每 10 毫秒看一次
+    if (video.requestVideoFrameCallback) video.requestVideoFrameCallback(function () { poolPump(); });
+    else setTimeout(poolPump, 10);
+  }
+
   function loop() {
     if (!running) return;
+    if (poolWanted()) { poolPump(); return; }
     decodeFrame().then(function (items) {
       frames++; fpsN++;
       var fresh = false, i;
@@ -750,7 +824,7 @@ var LT = (function () {
                doneInfo: $('doneInfo').textContent,
                plain: plain, missing: missingText, rx: ft ? { min: ft.seedMin, max: ft.seedMax } : null, time: $('timeInfo').textContent, status: $('status').textContent,
                result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc },
-               frames: frames, hits: hits, roi: roi, engine: engineName };
+               frames: frames, hits: hits, roi: roi, pool: pool ? pool.length : 0, poolBroken: poolBroken, poolNote: poolNote, engine: engineName };
     },
     resultBytes: function () { return lastResult && Array.prototype.slice.call(lastResult.bytes); }
   };

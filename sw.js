@@ -1,6 +1,6 @@
 // 讓接收頁載入一次後可離線使用：有網路時拿最新版，沒網路才用快取
-var CACHE = 'qr-transfer-v3';
-var FILES = ['./', 'index.html', 'sender-ie11.html', 'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm', 'vendor/fflate.js'];
+var CACHE = 'qr-transfer-v4';
+var FILES = ['./', 'index.html', 'sender-ie11.html', 'vendor/zxing-reader.js', 'vendor/zxing_reader.wasm', 'vendor/fflate.js', 'vendor/decode-worker.js'];
 
 self.addEventListener('install', function (e) {
   e.waitUntil(caches.open(CACHE).then(function (c) { return c.addAll(FILES); }).then(function () { return self.skipWaiting(); }));
