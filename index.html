@@ -430,7 +430,7 @@ var LT = (function () {
 
   function hexOf(b) { var t = '', i; for (i = 0; i < b.length; i++) t += (b[i] < 16 ? '0' : '') + b[i].toString(16); return t; }
 
-  function ftFail(msg) { $('status').innerHTML = '<span class="err">' + msg + '請按「清除重來」再收一次。</span>'; }
+  function ftFail(msg) { if (tStart && !tEnd) tEnd = Date.now(); $('status').innerHTML = '<span class="err">' + msg + '請按「清除重來」再收一次。</span>'; }
 
   function finishFountain() {
     var N = ft.N, K = ft.K, G = ft.G, D = ft.D, buf = ft.buf, pb = ft.pb;
