@@ -95,7 +95,7 @@
       噴泉碼會自動驗證 SHA-256（傳送端有附的話）；壓縮過的內容會自動解壓。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
-    <div class="sub" id="buildInfo">接收頁版本 2026-11-12e</div>
+    <div class="sub" id="buildInfo">接收頁版本 2026-11-12f</div>
   </div>
 </div>
 
@@ -641,8 +641,7 @@ var LT = (function () {
   var POOL_SIZE = Math.max(2, Math.min(4, (navigator.hardwareConcurrency || 4) - 1));
 
   function poolWanted() {
-    return !nativeDet && !poolBroken && !window.__noPool && typeof Worker !== 'undefined' &&
-           video.videoWidth * video.videoHeight > 3000000;
+    return !nativeDet && !poolBroken && !window.__noPool && typeof Worker !== 'undefined' && video.videoWidth > 0;
   }
 
   function poolFail(msg) {
@@ -693,7 +692,7 @@ var LT = (function () {
     if (pool) for (i = 0; i < pool.length; i++) if (pool[i].ready && !pool[i].busy) { wk = pool[i]; break; }
     if (wk && w && h) {
       try {
-        var useRoi = !!roi && (++roiTick % 20) !== 0;
+        var useRoi = !!roi && w * h > 3000000 && (++roiTick % 20) !== 0;
         var sx = 0, sy = 0, sw = w, sh = h;
         if (useRoi) { sx = roi.x0; sy = roi.y0; sw = roi.x1 - roi.x0; sh = roi.y1 - roi.y0; }
         if (canvas.width !== sw) canvas.width = sw;

@@ -16,6 +16,8 @@
   button.primary { background: #2e89ff; border: 1px solid #2e89ff; }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   #qrWrap { background: #fff; padding: 0; border-radius: 6px; display: inline-block; margin: 8px 0; max-width: 100%; overflow: auto; }
+  #qrWrap.fs { display: block; width: 100%; height: 100%; max-width: none; margin: 0; border-radius: 0; overflow: hidden; cursor: pointer; }
+  #qrWrap.fs canvas { margin: 0 auto; }
   canvas { display: block; }
   .status { font-size: 16px; font-weight: bold; color: #45bd62; margin: 6px 0; }
   .sub-info { font-size: 13px; color: #b0b3b8; margin-bottom: 6px; }
@@ -49,6 +51,8 @@
         <option value="8">8 張</option>
         <option value="12">12 張</option>
         <option value="16">16 張</option>
+        <option value="24">24 張 (6x4)</option>
+        <option value="28">28 張 (7x4，搭配 1200 位元組)</option>
       </select>
     </label>
   </div>
@@ -72,6 +76,7 @@
   <div class="row">
     <button id="prevBtn" disabled>|&lt; 上一畫面</button>
     <button class="primary" id="playBtn" disabled>自動輪播</button>
+    <button id="fsBtn">全螢幕只顯示 QR</button>
     <button id="nextBtn" disabled>下一畫面 &gt;|</button>
     <label>輪播間隔:
       <select id="speedSel">
@@ -107,7 +112,9 @@
   </div>
 
   <div class="helper-box">
-    <b>版本 2026-11-12b</b>（要搭配同日或更新的接收頁；舊接收頁請重新整理）。上一版留在 <code>sender-ie11-prev.html</code>。<br>
+    <b>版本 2026-11-12c</b>（要搭配同日或更新的接收頁；舊接收頁請重新整理）。上一版留在 <code>sender-ie11-prev.html</code>。<br>
+    <b>目前建議的高速設定：</b>單張容量 1200、每畫面 28 張、間隔 0.033 或 0.05 秒，按「全螢幕只顯示 QR」。手機橫拿、相機 1080p。小張多列的排法比大張少列更不容易被相機拍壞。<br>
+    <b>全螢幕：</b>按「全螢幕只顯示 QR」後畫面只剩 QR。點一下畫面或按空白鍵是開始／暫停，左右鍵是上一個／下一個畫面，Esc 離開。<br>
     <b>完整性：</b>噴泉碼會把檔案的 SHA-256 一起傳過去，手機收齊後自動比對；上方也會顯示 SHA-256 供人工核對。<br>
     <b>壓縮：</b>瀏覽器支援時（Chrome、Edge）會先試 gzip 壓縮，變小才採用，手機端自動解壓。PDF、zip、圖片這類已壓縮的檔案不會變小。IE 沒有這個功能，照原樣傳。<br>
     <b>大檔案：</b>補償張改成分組編碼，手機的運算量和記憶體跟檔案大小成正比。<br>
@@ -872,16 +879,22 @@ function fountainFrame(f, seed) {
     for (i = 0; i < mats.length; i++) if (mats[i].n > nMax) nMax = mats[i].n;
     var QUIET = 4;
     var cellMods = nMax + QUIET * 2;
-    var availW = Math.max(300, (window.innerWidth || document.documentElement.clientWidth) - 60);
-    var availH = Math.max(300, (window.innerHeight || document.documentElement.clientHeight) - 30);
+    var fsOn = isFs();
+    var availW = Math.max(300, (window.innerWidth || document.documentElement.clientWidth) - (fsOn ? 4 : 60));
+    var availH = Math.max(300, (window.innerHeight || document.documentElement.clientHeight) - (fsOn ? 4 : 30));
 
     // 版面用「每畫面張數」決定 (最後一個畫面張數較少時版面不跳動)，挑每格像素最大的排法
     var slots = fountain ? perScreen : Math.min(perScreen, active.length);
-    var best = { scale: 0, cols: 1, rows: 1 }, cols, rows, sc;
+    var best = { scale: -1, cols: 1, rows: 1, slots: 0 }, cols, rows, sc;
     for (cols = 1; cols <= slots; cols++) {
       rows = Math.ceil(slots / cols);
       sc = Math.floor(Math.min(availW / cols, availH / rows) / cellMods);
-      if (sc > best.scale) best = { scale: sc, cols: cols, rows: rows };
+      if (sc > best.scale ||
+          (sc === best.scale && (cols * rows - slots < best.cols * best.rows - best.slots ||
+            (cols * rows - slots === best.cols * best.rows - best.slots &&
+             Math.abs(cols / rows - 1.78) < Math.abs(best.cols / best.rows - 1.78))))) {
+        best = { scale: sc, cols: cols, rows: rows, slots: slots };
+      }
     }
     var scale = Math.min(10, Math.max(2, best.scale));
     var cell = cellMods * scale;
@@ -899,7 +912,8 @@ function fountainFrame(f, seed) {
         scale);
     }
     accEnc += tB - tA; accDraw += nowMs() - tB;
-    return { scale: scale, version: (nMax - 17) / 4 };
+    canvas.style.marginTop = fsOn ? Math.max(0, Math.floor((availH - ch) / 2)) + 'px' : '';
+    return { scale: scale, version: (nMax - 17) / 4, fits: (cw <= availW + 4 && ch <= availH + 4), cols: best.cols, rows: best.rows };
   }
 
   function updateUI(force) {
@@ -928,7 +942,8 @@ function fountainFrame(f, seed) {
       single = (screenCount() <= 1);
     }
     sub += ' | QR Version ' + info.version + ' | 每格 ' + info.scale + ' 像素';
-    if (info.scale < 3) sub += '（偏小，掃不到請減少每畫面張數或單張容量）';
+    if (perScreen > 1) sub += '（' + info.cols + 'x' + info.rows + '）';
+    if (!info.fits) sub += '【畫面放不下：請按「全螢幕只顯示 QR」，或減少每畫面張數】';
     if (rateTxt) sub += ' | ' + rateTxt;
     if (buildNote) sub += ' | ' + buildNote;
     setText('subInfo', sub);
@@ -1071,6 +1086,32 @@ function fountainFrame(f, seed) {
   }
 
   $('speedSel').onchange = function () { resetPace(); if (playing) startLoop(); };
+  var wrapEl = $('qrWrap');
+  function isFs() {
+    return (document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement) === wrapEl;
+  }
+  function enterFs() {
+    var fn = wrapEl.requestFullscreen || wrapEl.webkitRequestFullscreen || wrapEl.msRequestFullscreen;
+    if (!fn) { alert('這個瀏覽器不支援全螢幕，請改按 F11 並把頁面捲到 QR 的位置。'); return; }
+    try { fn.call(wrapEl); } catch (e) { alert('無法進入全螢幕：' + e.message); }
+  }
+  function onFsChange() {
+    wrapEl.className = isFs() ? 'fs' : '';
+    setTimeout(function () { if (hasData()) updateUI(true); }, 80);
+  }
+  document.addEventListener('fullscreenchange', onFsChange);
+  document.addEventListener('webkitfullscreenchange', onFsChange);
+  document.addEventListener('MSFullscreenChange', onFsChange);
+  $('fsBtn').onclick = enterFs;
+  wrapEl.onclick = function () { if (isFs()) togglePlay(); };
+  document.onkeydown = function (e) {
+    e = e || window.event;
+    if (!isFs()) return;
+    if (e.keyCode === 32) { togglePlay(); if (e.preventDefault) e.preventDefault(); return false; }
+    if (e.keyCode === 37) prevScreen();
+    if (e.keyCode === 39) nextScreen();
+  };
+
   $('prevBtn').onclick = prevScreen;
   $('nextBtn').onclick = nextScreen;
   $('playBtn').onclick = togglePlay;
