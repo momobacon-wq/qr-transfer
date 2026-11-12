@@ -90,9 +90,10 @@
       5. 完成後按「下載檔案」。<br>
       6. 掃不到：手機靠近一點、傳送端把輪播間隔調慢、「單張容量」調小、「每畫面張數」降到 1，或在上方換一個解碼引擎。「系統內建」引擎在部分 Android 上可能較快，但讀不了二進位噴泉碼，只適合文字版噴泉碼與帶頁碼標籤。<br>
       「接收率」是手機實際讀到的張數佔傳送端播出張數的比例；偏低時把傳送端間隔調慢、或把上方相機改成 60 張/秒試試。<br>
+      噴泉碼會自動驗證 SHA-256（傳送端有附的話）；壓縮過的內容會自動解壓。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
-    <div class="sub" id="buildInfo">接收頁版本 2026-11-12a</div>
+    <div class="sub" id="buildInfo">接收頁版本 2026-11-12b</div>
   </div>
 </div>
 
@@ -100,9 +101,12 @@
 /*LT-BEGIN*/
 /* ---- 噴泉碼共用核心：傳送端與接收端必須一字不差 ----
    影格 = 17 位元組檔頭 + K 位元組資料
-   檔頭: 'Q' 'F' 版本(1) | 資料流 CRC32 (4) | 資料流長度 (4) | K (2) | 種子 (4)，皆為大端序
-   資料流 = 檔名長度 (2) + 檔名 UTF-8 + 檔案內容，切成 N = ceil(長度/K) 塊，最後一塊補 0
-   種子 < N：就是第「種子」塊原文；種子 >= N：由種子隨機挑出的若干塊 XOR 在一起 */
+   檔頭: 'Q' 'F' 版本 | 資料流 CRC32 (4) | 資料流長度 (4) | K (2) | 種子 (4)，皆為大端序
+   資料流切成 N = ceil(長度/K) 塊，最後一塊補 0。
+   種子 < N：就是第「種子」塊原文。
+   種子 >= N：補償張。全部的塊依「塊號 mod G」分成 G 組，這一張屬於第 (種子-N) mod G 組，
+              由該組內隨機挑出的若干塊 XOR 在一起。分組讓解碼的運算量和記憶體跟檔案大小成正比。
+   版本 1：G = 1 (不分組)；版本 2：G = ceil(N / 1024)。 */
 var LT = (function () {
   function imul(a, b) {
     var ah = (a >>> 16) & 0xffff, al = a & 0xffff, bh = (b >>> 16) & 0xffff, bl = b & 0xffff;
@@ -120,18 +124,23 @@ var LT = (function () {
     };
   }
 
+  function groups(version, N) { return version >= 2 ? Math.ceil(N / 1024) : 1; }
+  // 第 g 組有幾塊 (塊號 g, g+G, g+2G, ...)
+  function groupSize(N, G, g) { return Math.ceil((N - g) / G); }
+
   // 這個種子的影格是由哪幾塊 XOR 而成 (由小到大)。
-  // 每塊各自以機率 min(1/2, 256/N) 入選；一塊都沒選到時補選一塊。
-  function indices(seed, N) {
+  // 組內每塊各自以機率 min(1/2, 256/組大小) 入選；一塊都沒選到時補選一塊。
+  function indices(seed, N, G) {
     if (seed < N) return [seed];
-    var next = rng(seed), out = [], i;
-    var limit = (N <= 512) ? 2147483648 : Math.floor(1099511627776 / N);
-    for (i = 0; i < N; i++) if (next() < limit) out.push(i);
-    if (!out.length) out.push(next() % N);
+    var g = (seed - N) % G, m = groupSize(N, G, g);
+    var next = rng(seed), out = [], k;
+    var limit = (m <= 512) ? 2147483648 : Math.floor(1099511627776 / m);
+    for (k = 0; k < m; k++) if (next() < limit) out.push(g + k * G);
+    if (!out.length) out.push(g + (next() % m) * G);
     return out;
   }
 
-  return { HEADER: 17, indices: indices };
+  return { HEADER: 17, indices: indices, groups: groups, groupSize: groupSize };
 })();
 /*LT-END*/
 
@@ -321,21 +330,41 @@ var LT = (function () {
   }
 
   /* ---------------- 噴泉碼 ---------------- */
-  function isFountain(b) { return b && b.length > 17 && b[0] === 0x51 && b[1] === 0x46 && b[2] === 1; }
+  // 二進位影格：'Q' 'F' + 版本位元組 (1～31)。文字版是 "QF1:..."，第三個字元是可見字元，不會落在這個範圍
+  function isFountain(b) { return b && b.length > 17 && b[0] === 0x51 && b[1] === 0x46 && b[2] >= 1 && b[2] < 32; }
 
-  // 每收到一張就做一步高斯消去；rank 到 N 就能解出全部
+  function ftStatus(msg) {
+    $('status').textContent = msg || ('噴泉碼 — 已解出 ' + ft.rank + ' / ' + ft.N + ' 塊（收到 ' + ft.frames + ' 張）');
+    $('barIn').style.width = (ft.rank * 100 / ft.N) + '%';
+  }
+
+  // 每收到一張就在它所屬的那一組做一步高斯消去。
+  // 所有資料放在同一個緩衝區 buf：第 c 塊解出來 (或暫時是以第 c 塊為首的組合) 就放在 buf 的第 c 格。
+  // pb[c]：第 c 格那一列還含有組內哪些塊 (位元表)；null 表示只剩第 c 塊自己。
   function handleFountain(bytes) {
     if (!isFountain(bytes)) return false;
+    var ver = bytes[2];
+    if (ver !== 1 && ver !== 2) {
+      $('camInfo').innerHTML = '<span class="err">傳送端的版本比這個接收頁新，請重新整理接收頁。</span>';
+      return false;
+    }
     function u32(o) { return ((bytes[o] << 24) | (bytes[o + 1] << 16) | (bytes[o + 2] << 8) | bytes[o + 3]) >>> 0; }
     var crc = u32(3), len = u32(7), K = (bytes[11] << 8) | bytes[12], seed = u32(13);
     if (K < 1 || bytes.length !== 17 + K || len < 2) return false;
     var N = Math.ceil(len / K);
-    if (N > 60000) return false;
-    var key = crc + ':' + len + ':' + K;
+    if (N > 4000000) return false;
+    var key = ver + ':' + crc + ':' + len + ':' + K;
     if (busyWith('fountain', key, '噴泉碼 ' + len + ' Bytes')) return false;
     if (!ft || ft.key !== key) {
-      ft = { key: key, crc: crc, len: len, K: K, N: N, W: (N + 31) >>> 5, D: (K + 3) >>> 2,
-             piv: new Array(N), rank: 0, seen: new Set(), frames: 0, done: false, seedMin: seed, seedMax: seed };
+      var G0 = LT.groups(ver, N), D0 = (K + 3) >>> 2, buf0;
+      try { buf0 = new Uint32Array(N * D0); }
+      catch (e) {
+        $('status').innerHTML = '<span class="err">記憶體不足，這支手機收不下 ' + fmtSize(len) + ' 的檔案。</span>';
+        return false;
+      }
+      ft = { key: key, ver: ver, crc: crc, len: len, K: K, N: N, G: G0, D: D0, buf: buf0,
+             pb: new Array(N), have: new Uint8Array(N), grank: new Int32Array(G0),
+             rank: 0, seen: new Set(), frames: 0, done: false, seedMin: seed, seedMax: seed };
       cur = null;
       clearResult();
       startClock();
@@ -346,60 +375,129 @@ var LT = (function () {
     if (seed < ft.seedMin) ft.seedMin = seed;
     if (seed > ft.seedMax) ft.seedMax = seed;
 
-    var W = ft.W, D = ft.D, idx = LT.indices(seed, N), i, w = 0, c, p, fresh = false;
-    var b = new Uint32Array(W), d = new Uint32Array(D);
+    var G = ft.G, D = ft.D, buf = ft.buf, idx = LT.indices(seed, N, G);
+    var g = idx[0] % G, m = LT.groupSize(N, G, g);
+    if (ft.grank[g] === m) return false;                    // 這一組已經解完
+    var W = (m + 31) >>> 5, b = new Uint32Array(W), d = new Uint32Array(D);
+    var i, k, w = 0, c, p, base, bit, pure, fresh = false;
     new Uint8Array(d.buffer).set(bytes.subarray(17));
-    for (i = 0; i < idx.length; i++) b[idx[i] >>> 5] |= 1 << (idx[i] & 31);
+    for (i = 0; i < idx.length; i++) { k = (idx[i] - g) / G; b[k >>> 5] |= 1 << (k & 31); }
     for (;;) {
       while (w < W && b[w] === 0) w++;
-      if (w >= W) break;                                  // 這張沒有新資訊
-      c = w * 32 + (31 - Math.clz32(b[w] & -b[w]));        // 最低位的未知塊
-      p = ft.piv[c];
-      if (!p) { ft.piv[c] = { b: b, d: d }; ft.rank++; fresh = true; break; }
-      for (i = w; i < W; i++) b[i] ^= p.b[i];
-      for (i = 0; i < D; i++) d[i] ^= p.d[i];
+      if (w >= W) break;                                    // 這張沒有新資訊
+      k = w * 32 + (31 - Math.clz32(b[w] & -b[w]));         // 組內最低位的未解塊
+      bit = 1 << (k & 31);
+      c = g + k * G; base = c * D;
+      if (!ft.have[c]) {
+        buf.set(d, base);
+        pure = ((b[w] ^ bit) >>> 0) === 0;
+        for (i = w + 1; pure && i < W; i++) if (b[i]) pure = false;
+        ft.pb[c] = pure ? null : b;
+        ft.have[c] = 1; ft.grank[g]++; ft.rank++; fresh = true;
+        break;
+      }
+      p = ft.pb[c];
+      if (p) { for (i = w; i < W; i++) b[i] ^= p[i]; } else b[w] ^= bit;
+      for (i = 0; i < D; i++) d[i] ^= buf[base + i];
     }
-    $('status').textContent = '噴泉碼 — 已解出 ' + ft.rank + ' / ' + N + ' 塊（收到 ' + ft.frames + ' 張）';
-    $('barIn').style.width = (ft.rank * 100 / N) + '%';
-    if (fresh && (ft.rank & 15) === 0) tickClock();
+    if (fresh && (ft.rank < 32 || (ft.rank & 15) === 0 || ft.rank === N)) { ftStatus(); tickClock(); }
     if (ft.rank === N) {
       ft.done = true;
-      $('status').textContent = '噴泉碼 — 收齊，解碼中…';
+      ftStatus('噴泉碼 — 收齊，解碼與驗證中…');
       setTimeout(finishFountain, 30);
     }
     return fresh;
   }
 
+  function loadScript(src) {
+    return new Promise(function (resolve, reject) {
+      var el = document.createElement('script');
+      el.src = src; el.onload = resolve; el.onerror = function () { reject(new Error('載入 ' + src + ' 失敗')); };
+      document.head.appendChild(el);
+    });
+  }
+
+  // gzip 解壓：優先用瀏覽器內建，沒有或失敗時改用隨頁附帶的 fflate
+  function gunzip(u8) {
+    function viaLib() { return loadScript('vendor/fflate.js').then(function () { return fflate.gunzipSync(u8); }); }
+    if (!window.__noNativeGunzip && typeof DecompressionStream !== 'undefined' && Blob.prototype.stream) {
+      return new Response(new Blob([u8]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()
+        .then(function (ab) { return new Uint8Array(ab); })
+        .catch(viaLib);
+    }
+    return viaLib();
+  }
+
+  function hexOf(b) { var t = '', i; for (i = 0; i < b.length; i++) t += (b[i] < 16 ? '0' : '') + b[i].toString(16); return t; }
+
+  function ftFail(msg) { $('status').innerHTML = '<span class="err">' + msg + '請按「清除重來」再收一次。</span>'; }
+
   function finishFountain() {
-    var N = ft.N, K = ft.K, W = ft.W, D = ft.D, piv = ft.piv, c, w, v, j, i, row, src;
-    // 回代：從最後一塊往前，把每一列消到只剩自己那一塊
-    for (c = N - 1; c >= 0; c--) {
-      row = piv[c];
-      for (w = c >>> 5; w < W; w++) {
-        v = row.b[w];
-        if (w === (c >>> 5)) v &= ~((2 << (c & 31)) - 1);
-        while (v) {
-          j = w * 32 + (31 - Math.clz32(v & -v));
-          src = piv[j].d;
-          for (i = 0; i < D; i++) row.d[i] ^= src[i];
-          v &= v - 1;
+    var N = ft.N, K = ft.K, G = ft.G, D = ft.D, buf = ft.buf, pb = ft.pb;
+    var g, m, W, k, c, w, v, j, i, p, base, src, stream;
+    // 回代：每一組從最後一塊往前，把每一列消到只剩自己那一塊
+    for (g = 0; g < G; g++) {
+      m = LT.groupSize(N, G, g); W = (m + 31) >>> 5;
+      for (k = m - 1; k >= 0; k--) {
+        c = g + k * G; p = pb[c];
+        if (!p) continue;
+        base = c * D;
+        for (w = k >>> 5; w < W; w++) {
+          v = p[w] | 0;
+          if (w === (k >>> 5)) v &= ~((2 << (k & 31)) - 1);
+          while (v) {
+            j = w * 32 + (31 - Math.clz32(v & -v));
+            src = (g + j * G) * D;
+            for (i = 0; i < D; i++) buf[base + i] ^= buf[src + i];
+            v &= v - 1;
+          }
         }
       }
     }
-    var all = new Uint8Array(N * K);
-    for (c = 0; c < N; c++) all.set(new Uint8Array(piv[c].d.buffer, 0, K), c * K);
-    var stream = all.subarray(0, ft.len);
-    if (crc32(stream) !== ft.crc) {
-      $('status').innerHTML = '<span class="err">CRC32 驗證失敗，請按「清除重來」再收一次。</span>';
-      return;
+    ft.pb = null;
+    if (K % 4 === 0 || N === 1) {
+      stream = new Uint8Array(buf.buffer, 0, ft.len);       // 緩衝區本身就是資料流，不必再複製
+    } else {
+      var all = new Uint8Array(N * K);
+      for (c = 0; c < N; c++) all.set(new Uint8Array(buf.buffer, c * D * 4, K), c * K);
+      stream = all.subarray(0, ft.len);
+      ft.buf = null;
     }
-    var nl = (stream[0] << 8) | stream[1];
-    var name = 'download.bin';
-    try { name = new TextDecoder().decode(stream.subarray(2, 2 + nl)) || name; } catch (e) {}
-    var file = stream.slice(2 + nl);
-    ft.piv = null;      // 釋放記憶體
-    $('status').textContent = name + ' — 收齊（共收 ' + ft.frames + ' 張，原文 ' + N + ' 塊），可以下載';
-    deliver(name, file, '｜傳輸 CRC32 驗證通過');
+    if (crc32(stream) !== ft.crc) { ftFail('CRC32 驗證失敗，'); return; }
+
+    var flags = 0, pos = 0, sha = null, origLen = -1, name = 'download.bin', nl;
+    if (ft.ver >= 2) flags = stream[pos++];
+    nl = (stream[pos] << 8) | stream[pos + 1]; pos += 2;
+    try { name = new TextDecoder().decode(stream.subarray(pos, pos + nl)) || name; } catch (e) {}
+    pos += nl;
+    if (flags & 2) { sha = stream.subarray(pos, pos + 32); pos += 32; }
+    if (flags & 1) { origLen = ((stream[pos] << 24) | (stream[pos + 1] << 16) | (stream[pos + 2] << 8) | stream[pos + 3]) >>> 0; pos += 4; }
+    var payload = stream.subarray(pos), frames = ft.frames, mine = ft, note = '｜傳輸 CRC32 驗證通過';
+
+    var step = Promise.resolve(payload);
+    if (flags & 1) {
+      step = gunzip(payload).then(function (file) {
+        if (file.length !== origLen) throw new Error('解壓後大小不符');
+        note += '｜已解壓（傳輸 ' + payload.length + ' → 原始 ' + file.length + ' Bytes）';
+        return file;
+      });
+    }
+    step.then(function (file) {
+      if (!sha) return file;
+      if (!(window.crypto && crypto.subtle)) { note += '｜這個瀏覽器無法計算 SHA-256，未驗證'; return file; }
+      return crypto.subtle.digest('SHA-256', file).then(function (h) {
+        var got = hexOf(new Uint8Array(h)), want = hexOf(sha);
+        if (got !== want) throw new Error('SHA-256 不符（收到的檔案與原始檔不同）');
+        note += '｜SHA-256 驗證通過：' + got;
+        return file;
+      });
+    }).then(function (file) {
+      if (ft !== mine) return;                               // 驗證期間使用者按了清除
+      $('status').textContent = name + ' — 收齊（共收 ' + frames + ' 張，原文 ' + N + ' 塊），可以下載';
+      deliver(name, file, note);
+    }).catch(function (e) {
+      if (ft === mine) ftFail((e && e.message || e) + '，');
+    });
   }
 
   function resetAll() {
@@ -606,7 +704,8 @@ var LT = (function () {
     handleText: handleText, handleFountain: handleFountain, handleItem: handleItem, reset: resetAll,
     state: function () {
       return { cur: cur && { name: cur.name, total: cur.total, count: cur.count },
-               ft: ft && { N: ft.N, K: ft.K, rank: ft.rank, frames: ft.frames, done: ft.done },
+               ft: ft && { N: ft.N, K: ft.K, G: ft.G, ver: ft.ver, rank: ft.rank, frames: ft.frames, done: ft.done },
+               doneInfo: $('doneInfo').textContent,
                plain: plain, missing: missingText, rx: ft ? { min: ft.seedMin, max: ft.seedMax } : null, time: $('timeInfo').textContent, status: $('status').textContent,
                result: lastResult && { name: lastResult.name, size: lastResult.bytes.length, crc: lastResult.crc },
                frames: frames, hits: hits, engine: engineName };

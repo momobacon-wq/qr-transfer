@@ -1,0 +1,903 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="X-UA-Compatible" content="IE=edge">
+<title>離線標準 QR Code 傳檔工具 (IE11 / ES5 版)</title>
+<style>
+  * { box-sizing: border-box; font-family: "Microsoft JhengHei", "Segoe UI", Arial, sans-serif; }
+  body { margin: 0; padding: 12px; background: #18191a; color: #e4e6eb; text-align: center; }
+  .container { width: 100%; background: #242526; padding: 14px; border-radius: 12px; text-align: center; }
+  h2 { margin: 0 0 8px 0; font-size: 20px; }
+  .row { margin: 8px 0; }
+  .row label, .row button, .row input { display: inline-block; margin: 4px 5px; vertical-align: middle; }
+  input, select, button, textarea { padding: 7px 10px; border-radius: 6px; border: 1px solid #444; background: #3a3b3c; color: #fff; font-size: 14px; }
+  button { cursor: pointer; font-weight: bold; }
+  button.primary { background: #2e89ff; border: 1px solid #2e89ff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  #qrWrap { background: #fff; padding: 0; border-radius: 6px; display: inline-block; margin: 8px 0; max-width: 100%; overflow: auto; }
+  canvas { display: block; }
+  .status { font-size: 16px; font-weight: bold; color: #45bd62; margin: 6px 0; }
+  .sub-info { font-size: 13px; color: #b0b3b8; margin-bottom: 6px; }
+  .helper-box { text-align: left; background: #111; padding: 12px; border-radius: 8px; font-size: 13px; color: #ccc; margin-top: 12px; line-height: 1.6; }
+  code { background: #2d2d2d; padding: 2px 6px; border-radius: 4px; color: #ffab40; font-family: Consolas, monospace; word-break: break-all; }
+  textarea { width: 100%; }
+</style>
+</head>
+<body>
+
+<div class="container">
+  <h2>標準黑白 QR Code 離線傳檔器（IE11 版）</h2>
+
+  <div class="row">
+    <input type="file" id="fileInput">
+    <label>單張容量:
+      <select id="chunkSizeSel">
+        <option value="450">450 位元組 (最易掃描)</option>
+        <option value="800">800 位元組</option>
+        <option value="1200" selected>1200 位元組 (高速輪播建議)</option>
+        <option value="2000">2000 位元組 (大螢幕)</option>
+        <option value="2900">2900 位元組 (單張 QR 上限，Version 40)</option>
+      </select>
+    </label>
+    <label>每畫面張數:
+      <select id="perScreenSel">
+        <option value="1" selected>1 張</option>
+        <option value="2">2 張</option>
+        <option value="4">4 張</option>
+        <option value="6">6 張</option>
+        <option value="8">8 張</option>
+        <option value="12">12 張</option>
+        <option value="16">16 張</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="row">
+    <label>編碼格式:
+      <select id="formatSel">
+        <option value="fountain" selected>噴泉碼・二進位 (最快，不怕漏張；要用接收網頁)</option>
+        <option value="fountaintxt">噴泉碼・文字 (不怕漏張；接收網頁可選系統內建引擎，容量少 1/4)</option>
+        <option value="tagged">帶頁碼標籤 [頁/總頁|檔名|Base64] (防漏頁、亂序可重組)</option>
+        <option value="b64">分段純 Base64 (只適合每畫面 1 張、依序掃描)</option>
+        <option value="dataurl">單張 DataURL 直出 (小檔案貼入手機瀏覽器直接下載)</option>
+        <option value="rawtext">純文字直出 (直接傳送 .txt / 腳本 / 設定檔內容)</option>
+      </select>
+    </label>
+  </div>
+
+  <div id="statusText" class="status" style="color:#ffab40">程式還沒有執行。如果這行字一直沒變，表示瀏覽器擋掉了這個網頁的指令碼。</div>
+  <div id="subInfo" class="sub-info">請看視窗最下方或最上方有沒有「Internet Explorer 已限制這個網頁執行指令碼或 ActiveX 控制項」的提示列，按「允許被封鎖的內容」(Allow blocked content)。沒有提示列時，按 F12 看「文件模式」是不是 11 或 Edge。</div>
+
+  <div class="row">
+    <button id="prevBtn" disabled>|&lt; 上一畫面</button>
+    <button class="primary" id="playBtn" disabled>自動輪播</button>
+    <button id="nextBtn" disabled>下一畫面 &gt;|</button>
+    <label>輪播間隔:
+      <select id="speedSel">
+        <option value="3000">3 秒/畫面</option>
+        <option value="1500">1.5 秒/畫面</option>
+        <option value="800">0.8 秒/畫面</option>
+        <option value="400">0.4 秒/畫面</option>
+        <option value="200">0.2 秒/畫面</option>
+        <option value="100" selected>0.1 秒/畫面</option>
+        <option value="66">0.066 秒/畫面</option>
+        <option value="50">0.05 秒/畫面</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="row">
+    <label>只補播這幾張:
+      <input type="text" id="onlyPages" size="28" placeholder="例如 7,12,19-22（留空＝全部）">
+    </label>
+    <button id="onlyBtn">只播這幾張</button>
+    <button id="allBtn">恢復全部</button>
+  </div>
+
+  <div id="qrWrap">
+    <canvas id="qrCanvas" width="360" height="360"></canvas>
+  </div>
+
+  <div class="row">
+    <textarea id="quickText" rows="2" placeholder="或者直接在此貼上要傳到手機的文字 / Config / 金鑰，即時轉成 QR Code..."></textarea>
+  </div>
+
+  <div class="helper-box">
+    <b>噴泉碼（預設）：</b>畫面會不斷播出新的編碼張，手機用接收網頁對著掃，漏掉哪幾張都沒關係，收到的張數夠了就自動還原並驗證 CRC32，不需要補頁，也不必從頭開始對。先播完一輪原文，之後持續播補償碼，手機顯示收齊就可以停。掃不太到時把輪播間隔調慢或單張容量調小。<br>
+    <b>容量說明：</b>單張標準 QR Code 的物理上限是 2,953 位元組（Version 40、容錯 L），所以單張無法再放大 10 倍。單張容量最大可選 2,900，並可讓一個畫面同時顯示多張（4 張 x 2,900 = 每畫面約 11,600 位元組）；預設是 1 張 x 1,200 搭配 0.1 秒高速輪播，螢幕夠大、手機掃得到再往上調。<br>
+    <b>掃不到時：</b>Version 40 每邊 177 格，螢幕解析度不夠時每格只剩 2 像素，手機不易對焦。請先把「每畫面張數」降到 2 或 1，再不行把「單張容量」降到 2000 或 1200；瀏覽器視窗請最大化（F11 全螢幕更好）。<br>
+    <b>多張同畫面：</b>掃描順序不固定，所以請用「帶頁碼標籤」格式，手機端依 <code>頁/總頁|檔名|資料</code> 的頁碼排序後，把資料段接起來再做 Base64 解碼。選多張時「分段純 Base64」會自動改成帶頁碼標籤。<br>
+    <b>補漏頁：</b>接收網頁會列出還缺的頁碼（例如 <code>7,12,19-22</code>），把它打進上方「只補播這幾張」再按「只播這幾張」，就只輪播缺的那幾張；按「恢復全部」回到整份。<br>
+    <b>小檔案（&lt; 2.1 KB）：</b>選「單張 DataURL 直出」，掃描後把 <code>data:...</code> 貼到手機瀏覽器網址列即可下載。<br>
+    <b>還原：</b>手機開接收網頁，鏡頭對著本畫面輪播到收齊，網頁會自動排序、解碼、下載，並顯示 CRC32；與上方狀態列的 CRC32 相同就代表檔案完整。沒有接收網頁時，合併後的 Base64 文字可用 iOS 捷徑（Base64 解碼 → 儲存檔案）或 Termux <code>base64 -d in.txt &gt; out.zip</code> 還原。
+  </div>
+</div>
+
+<script>
+// 任何程式錯誤都直接顯示在畫面上，方便回報
+window.onerror = function (msg, url, line) {
+  try {
+    var el = document.getElementById('statusText'), sub = document.getElementById('subInfo');
+    if (el) { el.style.color = '#ff6b6b'; el.innerText = '程式錯誤：' + msg + '（第 ' + line + ' 行）'; }
+    if (sub) sub.innerText = '文件模式: ' + (document.documentMode || '非 IE') + ' | ' + navigator.userAgent + ' | 請把這個畫面拍下來回報';
+  } catch (e) {}
+  return false;
+};
+(function () {
+  var miss = [];
+  if (typeof Uint8Array === 'undefined' || typeof Uint32Array === 'undefined') miss.push('Typed Array');
+  if (typeof FileReader === 'undefined') miss.push('FileReader');
+  if (!document.createElement('canvas').getContext) miss.push('Canvas');
+  if (typeof btoa === 'undefined') miss.push('btoa');
+  if (miss.length) throw new Error('這個瀏覽器模式缺少 ' + miss.join('、') + '，需要 IE10 以上的文件模式（請關閉相容性檢視）');
+})();
+
+/* =====================================================================
+   純 ES5 標準 ISO/IEC 18004 QR Code 產生器 (Byte Mode, Error Level L)
+   支援 Version 1 ~ 40 (最高 2953 Bytes)，無外部依賴，IE11 可執行
+===================================================================== */
+/*QR-BEGIN*/
+var QR = (function () {
+  // Version 1~40、ECC Level L：[每 Block 的 ECC 數, 群組1 Block 數, 群組1 Data 數, 群組2 Block 數, 群組2 Data 數]
+  var V_INFO = [
+    null,
+    [7, 1, 19, 0, 0], [10, 1, 34, 0, 0], [15, 1, 55, 0, 0], [20, 1, 80, 0, 0],
+    [26, 1, 108, 0, 0], [18, 2, 68, 0, 0], [20, 2, 78, 0, 0], [24, 2, 97, 0, 0],
+    [30, 2, 116, 0, 0], [18, 2, 68, 2, 69], [20, 4, 81, 0, 0], [24, 2, 92, 2, 93],
+    [26, 4, 107, 0, 0], [30, 3, 115, 1, 116], [22, 5, 87, 1, 88], [24, 5, 98, 1, 99],
+    [28, 1, 107, 5, 108], [30, 5, 120, 1, 121], [28, 3, 113, 4, 114], [28, 3, 107, 5, 108],
+    [28, 4, 116, 4, 117], [28, 2, 111, 7, 112], [30, 4, 121, 5, 122], [30, 6, 117, 4, 118],
+    [26, 8, 106, 4, 107], [28, 10, 114, 2, 115], [30, 8, 122, 4, 123],
+    [30, 3, 117, 10, 118], [30, 7, 116, 7, 117], [30, 5, 115, 10, 116], [30, 13, 115, 3, 116],
+    [30, 17, 115, 0, 0], [30, 17, 115, 1, 116], [30, 13, 115, 6, 116], [30, 12, 121, 7, 122],
+    [30, 6, 121, 14, 122], [30, 17, 122, 4, 123], [30, 4, 122, 18, 123], [30, 20, 117, 4, 118],
+    [30, 19, 118, 6, 119]
+  ];
+
+  var ALIGN_POS = [
+    null, [], [6,18], [6,22], [6,26], [6,30], [6,34],
+    [6,22,38], [6,24,42], [6,26,46], [6,28,50], [6,30,54], [6,32,58], [6,34,62],
+    [6,26,46,66], [6,26,48,70], [6,26,50,74], [6,30,54,78], [6,30,56,82], [6,30,58,86], [6,34,62,90],
+    [6,28,50,72,94], [6,26,50,74,98], [6,30,54,78,102], [6,28,54,80,106], [6,32,58,84,110], [6,30,58,86,114], [6,34,62,90,118],
+    [6,26,50,74,98,122], [6,30,54,78,102,126], [6,26,52,78,104,130], [6,30,56,82,108,134],
+    [6,34,60,86,112,138], [6,30,58,86,114,142], [6,34,62,90,118,146],
+    [6,30,54,78,102,126,150], [6,24,50,76,102,128,154], [6,28,54,80,106,132,158],
+    [6,32,58,84,110,136,162], [6,26,54,82,110,138,166], [6,30,58,86,114,142,170]
+  ];
+
+  var MAX_BYTES = 2953;
+
+  // GF(256) 運算表
+  var EXP = new Uint8Array(512), LOG = new Uint8Array(256);
+  (function () {
+    var x = 1, i;
+    for (i = 0; i < 255; i++) {
+      EXP[i] = x; LOG[x] = i;
+      x = (x << 1) ^ ((x & 0x80) ? 0x11D : 0);
+    }
+    for (i = 255; i < 512; i++) EXP[i] = EXP[i - 255];
+  })();
+
+  // 生成多項式各係數的對數 (不含最高次的 1)；係數為 0 時記 -1
+  var genCache = {};
+  function genLog(deg) {
+    if (genCache[deg]) return genCache[deg];
+    var g = [1], i, j, res, out = [];
+    for (i = 0; i < deg; i++) {
+      res = [];
+      for (j = 0; j <= g.length; j++) res[j] = 0;
+      for (j = 0; j < g.length; j++) {
+        res[j] ^= g[j];
+        if (g[j]) res[j + 1] ^= EXP[LOG[g[j]] + i];
+      }
+      g = res;
+    }
+    for (j = 1; j <= deg; j++) out.push(g[j] ? LOG[g[j]] : -1);
+    genCache[deg] = out;
+    return out;
+  }
+
+  // 對 data[off .. off+len) 算 Reed-Solomon 糾錯碼
+  function rsEncode(data, off, len, ecLen) {
+    var gl = genLog(ecLen), ec = new Uint8Array(ecLen), i, j, f, lf;
+    for (i = 0; i < len; i++) {
+      f = data[off + i] ^ ec[0];
+      for (j = 0; j < ecLen - 1; j++) ec[j] = ec[j + 1];
+      ec[ecLen - 1] = 0;
+      if (f) {
+        lf = LOG[f];
+        for (j = 0; j < ecLen; j++) if (gl[j] >= 0) ec[j] ^= EXP[lf + gl[j]];
+      }
+    }
+    return ec;
+  }
+
+  function pickVersion(byteLen) {
+    var v, info, totalData, headerBytes;
+    for (v = 1; v < V_INFO.length; v++) {
+      info = V_INFO[v];
+      totalData = info[1] * info[2] + info[3] * info[4];
+      headerBytes = (v <= 9) ? 2 : 3;
+      if (byteLen + headerBytes <= totalData) return v;
+    }
+    throw new Error('單張資料過長，請調小單張容量！');
+  }
+
+  // 每個 Version 的固定圖樣只算一次：base = 功能圖樣，pos = 資料格的填入順序，mk = 各資料格的遮罩 (Mask 0)
+  var tplCache = {};
+  function template(ver) {
+    if (tplCache[ver]) return tplCache[ver];
+    var size = ver * 4 + 17, i, j;
+    var base = new Uint8Array(size * size), isFunc = new Uint8Array(size * size);
+    function setMod(x, y, val) { base[y * size + x] = val ? 1 : 0; isFunc[y * size + x] = 1; }
+
+    function drawFinder(ox, oy) {
+      var dx, dy, x, y, inBox, isBorder, isInner;
+      for (dy = -1; dy <= 7; dy++) {
+        for (dx = -1; dx <= 7; dx++) {
+          x = ox + dx; y = oy + dy;
+          if (x < 0 || y < 0 || x >= size || y >= size) continue;
+          inBox = (dx >= 0 && dx <= 6 && dy >= 0 && dy <= 6);
+          isBorder = (dx === 0 || dx === 6 || dy === 0 || dy === 6);
+          isInner = (dx >= 2 && dx <= 4 && dy >= 2 && dy <= 4);
+          setMod(x, y, inBox && (isBorder || isInner));
+        }
+      }
+    }
+    drawFinder(0, 0); drawFinder(size - 7, 0); drawFinder(0, size - 7);
+
+    for (i = 8; i < size - 8; i++) {
+      setMod(i, 6, i % 2 === 0);
+      setMod(6, i, i % 2 === 0);
+    }
+
+    var apos = ALIGN_POS[ver], pi, pj, px, py, dx, dy;
+    for (pi = 0; pi < apos.length; pi++) {
+      for (pj = 0; pj < apos.length; pj++) {
+        py = apos[pi]; px = apos[pj];
+        if ((px === 6 && py === 6) || (px === 6 && py === size - 7) || (px === size - 7 && py === 6)) continue;
+        for (dy = -2; dy <= 2; dy++) {
+          for (dx = -2; dx <= 2; dx++) {
+            setMod(px + dx, py + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+          }
+        }
+      }
+    }
+
+    // Format Info (ECC Level L、Mask 0 → 0x77C4)
+    var fmtBits = 0x77C4;
+    for (i = 0; i <= 5; i++) setMod(8, i, (fmtBits >>> i) & 1);
+    setMod(8, 7, (fmtBits >>> 6) & 1);
+    setMod(8, 8, (fmtBits >>> 7) & 1);
+    setMod(7, 8, (fmtBits >>> 8) & 1);
+    for (i = 9; i < 15; i++) setMod(14 - i, 8, (fmtBits >>> i) & 1);
+    for (i = 0; i < 8; i++) setMod(size - 1 - i, 8, (fmtBits >>> i) & 1);
+    for (i = 8; i < 15; i++) setMod(8, size - 15 + i, (fmtBits >>> i) & 1);
+    setMod(8, size - 8, 1); // Dark module
+
+    // Version 資訊 (Version 7 以上)
+    if (ver >= 7) {
+      var rem = ver;
+      for (i = 0; i < 12; i++) rem = (rem << 1) ^ ((rem >>> 11) * 0x1F25);
+      var vBits = (ver << 12) | rem, bit, a, c;
+      for (i = 0; i < 18; i++) {
+        bit = (vBits >>> i) & 1;
+        a = size - 11 + (i % 3); c = Math.floor(i / 3);
+        setMod(a, c, bit); setMod(c, a, bit);
+      }
+    }
+
+    // 資料格的走訪順序
+    var pos = [], mk = [], up = true, right, vert, x, y;
+    for (right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;
+      for (vert = 0; vert < size; vert++) {
+        y = up ? (size - 1 - vert) : vert;
+        for (j = 0; j < 2; j++) {
+          x = right - j;
+          if (!isFunc[y * size + x]) { pos.push(y * size + x); mk.push(((x + y) % 2 === 0) ? 1 : 0); }
+        }
+      }
+      up = !up;
+    }
+    tplCache[ver] = { size: size, base: base, pos: pos, mk: mk };
+    return tplCache[ver];
+  }
+
+  // bytes: 0~255 的陣列或 Uint8Array；回傳 { n: 邊長, m: Uint8Array(n*n)，m[y*n+x] = 0/1 }
+  function encodeFlat(bytes) {
+    var L = bytes.length, ver = pickVersion(L);
+    var info = V_INFO[ver];
+    var ecLen = info[0], g1 = info[1], d1 = info[2], g2 = info[3], d2 = info[4];
+    var totalData = g1 * d1 + g2 * d2, nb = g1 + g2;
+    var i, k, b, prev, used, p;
+
+    // 1. 資料碼字：模式 0100 + 長度 (8 或 16 bit) + 資料 + 結束符，整體錯開半個位元組
+    var dw = new Uint8Array(totalData);
+    if (ver <= 9) { dw[0] = 0x40 | (L >>> 4); p = 1; }
+    else { dw[0] = 0x40 | (L >>> 12); dw[1] = (L >>> 4) & 255; p = 2; }
+    prev = L & 15;
+    for (i = 0; i < L; i++) { b = bytes[i]; dw[p + i] = (prev << 4) | (b >>> 4); prev = b & 15; }
+    dw[p + L] = prev << 4;
+    used = p + L + 1;
+    for (i = used, k = 0; i < totalData; i++, k++) dw[i] = (k % 2 === 0) ? 0xEC : 0x11;
+
+    // 2. 分 Block 算糾錯碼，3. 交錯排列
+    var offs = [], lens = [], ecs = [], off = 0;
+    for (k = 0; k < nb; k++) {
+      lens[k] = (k < g1) ? d1 : d2;
+      offs[k] = off; off += lens[k];
+      ecs[k] = rsEncode(dw, offs[k], lens[k], ecLen);
+    }
+    var fw = new Uint8Array(totalData + nb * ecLen), maxLen = Math.max(d1, d2);
+    p = 0;
+    for (i = 0; i < maxLen; i++) for (k = 0; k < nb; k++) if (i < lens[k]) fw[p++] = dw[offs[k] + i];
+    for (i = 0; i < ecLen; i++) for (k = 0; k < nb; k++) fw[p++] = ecs[k][i];
+
+    // 4. 填進樣板
+    var t = template(ver), m = new Uint8Array(t.base), pos = t.pos, mk = t.mk;
+    var totalBits = fw.length * 8, np = pos.length;
+    for (i = 0; i < np; i++) {
+      m[pos[i]] = ((i < totalBits) ? ((fw[i >>> 3] >>> (7 - (i & 7))) & 1) : 0) ^ mk[i];
+    }
+    return { n: t.size, m: m };
+  }
+
+  // 回傳 size x size 的 0/1 二維陣列 (mat[y][x])
+  function encodeBytes(bytes) {
+    var q = encodeFlat(bytes), n = q.n, rows = [], y, x, row;
+    for (y = 0; y < n; y++) {
+      row = [];
+      for (x = 0; x < n; x++) row.push(q.m[y * n + x]);
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  return { encodeBytes: encodeBytes, encodeFlat: encodeFlat, MAX_BYTES: MAX_BYTES };
+})();
+
+/* ================== 切片 (與畫面無關，可單獨測試) ================== */
+function strToUtf8(str) {
+  var s, out = [], i;
+  try { s = unescape(encodeURIComponent(str)); }
+  catch (e) { s = unescape(encodeURIComponent(str.replace(/[\uD800-\uDFFF]/g, '?'))); }
+  for (i = 0; i < s.length; i++) out.push(s.charCodeAt(i));
+  return out;
+}
+
+// 整檔 CRC32 (8 位十六進位)，給接收端核對用
+function crc32Hex(bytes) {
+  var table = crc32Hex.table, c, n, k, i, crc = -1, hex;
+  if (!table) {
+    table = [];
+    for (n = 0; n < 256; n++) {
+      c = n;
+      for (k = 0; k < 8; k++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1);
+      table[n] = c;
+    }
+    crc32Hex.table = table;
+  }
+  for (i = 0; i < bytes.length; i++) crc = table[(crc ^ bytes[i]) & 0xFF] ^ (crc >>> 8);
+  hex = ((crc ^ -1) >>> 0).toString(16).toUpperCase();
+  while (hex.length < 8) hex = '0' + hex;
+  return hex;
+}
+
+function bytesToBase64(bytes) {
+  var parts = [], i, j, end, s;
+  for (i = 0; i < bytes.length; i += 8190) {   // 8190 是 3 的倍數，分段編碼可直接相接
+    end = Math.min(i + 8190, bytes.length);
+    s = '';
+    for (j = i; j < end; j++) s += String.fromCharCode(bytes[j]);
+    parts.push(btoa(s));
+  }
+  return parts.join('');
+}
+
+// 回傳 { chunks: [位元組陣列...], fmt: 實際使用的格式, note: 提示文字 }
+function buildChunks(fileBytes, fileName, fileMime, fmt, maxLen, perScreen) {
+  var MAXB = QR.MAX_BYTES;
+  var chunks = [], note = '', i, b64, total, part, hdr, partLen, tries;
+  if (maxLen > MAXB) maxLen = MAXB;
+
+  if (fmt === 'dataurl') {
+    var dataUrl = strToUtf8('data:' + fileMime + ';base64,' + bytesToBase64(fileBytes));
+    if (dataUrl.length > MAXB) {
+      note = 'DataURL 長度 ' + dataUrl.length + ' 位元組，超過單張上限 ' + MAXB + '，已改用帶頁碼標籤。';
+      fmt = 'tagged';
+    } else {
+      chunks.push(dataUrl);
+      return { chunks: chunks, fmt: fmt, note: note };
+    }
+  }
+
+  if (fmt === 'b64' && perScreen > 1) {
+    note = '每畫面多張時掃描順序不固定，已改用帶頁碼標籤。';
+    fmt = 'tagged';
+  }
+
+  if (fmt === 'rawtext') {
+    // 直接切位元組，但不把一個 UTF-8 字元切成兩半
+    var pos = 0, end, back;
+    while (pos < fileBytes.length) {
+      end = Math.min(pos + maxLen, fileBytes.length);
+      back = 0;
+      while (end < fileBytes.length && back < 3 && end > pos + 1 && (fileBytes[end] & 0xC0) === 0x80) { end--; back++; }
+      part = [];
+      for (i = pos; i < end; i++) part.push(fileBytes[i]);
+      chunks.push(part);
+      pos = end;
+    }
+    return { chunks: chunks, fmt: fmt, note: note };
+  }
+
+  b64 = bytesToBase64(fileBytes);
+  if (fmt === 'tagged') {
+    var nameBytes = strToUtf8(fileName).length;
+    partLen = maxLen;
+    for (tries = 0; tries < 4; tries++) {
+      total = Math.ceil(b64.length / partLen) || 1;
+      hdr = String(total).length * 2 + 3 + nameBytes;   // "頁/總頁|檔名|"
+      if (partLen + hdr <= MAXB) break;
+      partLen = MAXB - hdr - 2;
+      if (partLen < 16) throw new Error('檔名太長，請先改短檔名。');
+    }
+    total = Math.ceil(b64.length / partLen) || 1;
+    for (i = 0; i < total; i++) {
+      chunks.push(strToUtf8((i + 1) + '/' + total + '|' + fileName + '|' + b64.substr(i * partLen, partLen)));
+    }
+  } else {
+    total = Math.ceil(b64.length / maxLen) || 1;
+    for (i = 0; i < total; i++) chunks.push(strToUtf8(b64.substr(i * maxLen, maxLen)));
+  }
+  return { chunks: chunks, fmt: fmt, note: note };
+}
+// 解析「7,12,19-22」這種頁碼字串 (1 起算)，回傳由小到大、不重複的 0 起算索引；超出範圍的略過
+function parsePageList(str, total) {
+  var seen = {}, out = [], i, m, a, b, t;
+  var parts = String(str).replace(/[\uFF0C\u3001\uFF1B;\s]+/g, ',').replace(/[\uFF5E~\u2013\u2014\uFF0D]/g, '-').split(',');
+  for (i = 0; i < parts.length; i++) {
+    m = /^(\d+)(?:-(\d+))?$/.exec(parts[i]);
+    if (!m) continue;
+    a = parseInt(m[1], 10); b = m[2] ? parseInt(m[2], 10) : a;
+    if (a > b) { t = a; a = b; b = t; }
+    if (a < 1) a = 1;
+    if (b > total) b = total;
+    for (t = a; t <= b; t++) { if (!seen[t]) { seen[t] = 1; out.push(t - 1); } }
+  }
+  out.sort(function (x, y) { return x - y; });
+  return out;
+}
+/*LT-BEGIN*/
+/* ---- 噴泉碼共用核心：傳送端與接收端必須一字不差 ----
+   影格 = 17 位元組檔頭 + K 位元組資料
+   檔頭: 'Q' 'F' 版本(1) | 資料流 CRC32 (4) | 資料流長度 (4) | K (2) | 種子 (4)，皆為大端序
+   資料流 = 檔名長度 (2) + 檔名 UTF-8 + 檔案內容，切成 N = ceil(長度/K) 塊，最後一塊補 0
+   種子 < N：就是第「種子」塊原文；種子 >= N：由種子隨機挑出的若干塊 XOR 在一起 */
+var LT = (function () {
+  function imul(a, b) {
+    var ah = (a >>> 16) & 0xffff, al = a & 0xffff, bh = (b >>> 16) & 0xffff, bl = b & 0xffff;
+    return (al * bl + (((ah * bl + al * bh) << 16) >>> 0)) | 0;
+  }
+
+  // mulberry32：只用整數運算，各瀏覽器結果相同
+  function rng(seed) {
+    var a = seed | 0;
+    return function () {
+      a = (a + 0x6D2B79F5) | 0;
+      var t = imul(a ^ (a >>> 15), 1 | a);
+      t = (t + imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return (t ^ (t >>> 14)) >>> 0;
+    };
+  }
+
+  // 這個種子的影格是由哪幾塊 XOR 而成 (由小到大)。
+  // 每塊各自以機率 min(1/2, 256/N) 入選；一塊都沒選到時補選一塊。
+  function indices(seed, N) {
+    if (seed < N) return [seed];
+    var next = rng(seed), out = [], i;
+    var limit = (N <= 512) ? 2147483648 : Math.floor(1099511627776 / N);
+    for (i = 0; i < N; i++) if (next() < limit) out.push(i);
+    if (!out.length) out.push(next() % N);
+    return out;
+  }
+
+  return { HEADER: 17, indices: indices };
+})();
+/*LT-END*/
+
+// 準備噴泉碼：資料流 = 檔名長度(2) + 檔名 + 檔案內容
+function fountainSetup(fileBytes, fileName, maxLen, textMode) {
+  var nb = strToUtf8(fileName), i;
+  if (nb.length > 600) nb = strToUtf8('file.bin');
+  var len = 2 + nb.length + fileBytes.length;
+  var stream = new Uint8Array(len);
+  stream[0] = nb.length >>> 8; stream[1] = nb.length & 255;
+  for (i = 0; i < nb.length; i++) stream[2 + i] = nb[i];
+  if (fileBytes.subarray) stream.set(fileBytes, 2 + nb.length);
+  else for (i = 0; i < fileBytes.length; i++) stream[2 + nb.length + i] = fileBytes[i];
+  if (maxLen > QR.MAX_BYTES) maxLen = QR.MAX_BYTES;
+  var frameMax = textMode ? Math.floor((maxLen - 4) / 4) * 3 : maxLen;   // 文字模式: "QF1:" + Base64
+  var K = frameMax - LT.HEADER;
+  if (K > len) K = len;
+  if (K < 1) throw new Error('單張容量太小');
+  var N = Math.ceil(len / K), D = (K + 3) >>> 2;
+  // 每塊各佔 D 個 32 位元字 (尾端補 0)，之後 XOR 以字為單位
+  var words = new Uint32Array(N * D), view = new Uint8Array(words.buffer), c;
+  for (c = 0; c < N; c++) view.set(stream.subarray(c * K, Math.min((c + 1) * K, len)), c * D * 4);
+  return { words: words, len: len, K: K, N: N, D: D, crc: parseInt(crc32Hex(stream), 16), textMode: textMode };
+}
+
+// 產生指定種子的影格 (位元組陣列，可直接丟給 QR 編碼)
+function fountainFrame(f, seed) {
+  var K = f.K, D = f.D, H = LT.HEADER, out = new Uint8Array(H + K), idx = LT.indices(seed, f.N);
+  var w = f.words, acc = new Uint32Array(D), i, j, off;
+  out[0] = 0x51; out[1] = 0x46; out[2] = 1;
+  out[3] = (f.crc >>> 24) & 255; out[4] = (f.crc >>> 16) & 255; out[5] = (f.crc >>> 8) & 255; out[6] = f.crc & 255;
+  out[7] = (f.len >>> 24) & 255; out[8] = (f.len >>> 16) & 255; out[9] = (f.len >>> 8) & 255; out[10] = f.len & 255;
+  out[11] = (K >>> 8) & 255; out[12] = K & 255;
+  out[13] = (seed >>> 24) & 255; out[14] = (seed >>> 16) & 255; out[15] = (seed >>> 8) & 255; out[16] = seed & 255;
+  for (i = 0; i < idx.length; i++) {
+    off = idx[i] * D;
+    for (j = 0; j < D; j++) acc[j] ^= w[off + j];
+  }
+  out.set(new Uint8Array(acc.buffer, 0, K), H);
+  if (!f.textMode) return out;
+  var t = 'QF1:' + bytesToBase64(out), a = [];
+  for (i = 0; i < t.length; i++) a.push(t.charCodeAt(i));
+  return a;
+}
+/*QR-END*/
+
+/* ================== 介面控制 ================== */
+(function () {
+  var rawFileBytes = null;
+  var rawFileName = 'text.txt';
+  var rawFileMime = 'text/plain';
+  var chunks = [];     // 分頁模式：每張的位元組
+  var active = [];     // 分頁模式：目前要輪播的張 (chunks 的索引)；補播時只放缺的那幾張
+  var matCache = [];
+  var fountain = null; // 噴泉碼模式的狀態；不是噴泉碼時為 null
+  var perScreen = 1;
+  var curScreen = 0;
+  var buildNote = '';
+  var rawCrc = '';
+  var MAX_SEED = 2000000000;
+
+  function $(id) { return document.getElementById(id); }
+  var canvas = $('qrCanvas');
+  var ctx = canvas.getContext('2d');
+
+  function hasData() { return !!fountain || chunks.length > 0; }
+  function screenCount() { return Math.ceil(active.length / perScreen) || 1; }
+
+  function setText(id, t) {
+    var el = $(id);
+    if ('textContent' in el) el.textContent = t; else el.innerText = t;
+  }
+
+  function setAllActive() {
+    active = [];
+    for (var i = 0; i < chunks.length; i++) active.push(i);
+  }
+
+  function applyOnlyPages() {
+    if (fountain) { alert('噴泉碼不需要補頁：繼續輪播，手機收到足夠張數就會自動完成。'); return; }
+    if (!chunks.length) return;
+    var txt = $('onlyPages').value.replace(/^\s+|\s+$/g, '');
+    stopPlay();
+    if (!txt) {
+      setAllActive();
+    } else {
+      var list = parsePageList(txt, chunks.length);
+      if (!list.length) { alert('看不懂頁碼，請輸入像 7,12,19-22 這樣的格式（共 ' + chunks.length + ' 張）。'); return; }
+      active = list;
+    }
+    curScreen = 0;
+    updateUI();
+  }
+
+  $('fileInput').onchange = function (e) {
+    var f = (e.target || e.srcElement).files[0];
+    if (!f) return;
+    var reader = new FileReader();
+    reader.onload = function () {
+      rawFileName = f.name;
+      rawFileMime = f.type || 'application/octet-stream';
+      rawFileBytes = new Uint8Array(reader.result);
+      $('quickText').value = '';
+      if ($('formatSel').value === 'rawtext') $('formatSel').value = 'fountain';
+      rebuildChunks();
+    };
+    reader.onerror = function () { alert('讀取檔案失敗'); };
+    reader.readAsArrayBuffer(f);
+  };
+
+  function fromTextInput() {
+    var txt = $('quickText').value;
+    if (!txt) return;
+    rawFileName = 'snippet.txt';
+    rawFileMime = 'text/plain';
+    rawFileBytes = strToUtf8(txt);
+    $('formatSel').value = 'rawtext';
+    rebuildChunks();
+  }
+
+  function rebuildChunks() {
+    if (!rawFileBytes || rawFileBytes.length === 0) return;
+    stopPlay();
+    var maxLen = parseInt($('chunkSizeSel').value, 10);
+    var fmt = $('formatSel').value;
+    perScreen = parseInt($('perScreenSel').value, 10);
+    try {
+      if (fmt === 'fountain' || fmt === 'fountaintxt') {
+        fountain = fountainSetup(rawFileBytes, rawFileName, maxLen, fmt === 'fountaintxt');
+        chunks = []; buildNote = '';
+      } else {
+        var res = buildChunks(rawFileBytes, rawFileName, rawFileMime, fmt, maxLen, perScreen);
+        fountain = null;
+        chunks = res.chunks;
+        buildNote = res.note;
+        $('formatSel').value = res.fmt;
+      }
+    } catch (err) {
+      alert(err.message);
+      return;
+    }
+    matCache = [];
+    setAllActive();
+    $('onlyPages').value = '';
+    rawCrc = crc32Hex(rawFileBytes);
+    curScreen = 0;
+    updateUI();
+  }
+
+  function getMat(idx) {
+    if (chunks.length > 300) return QR.encodeFlat(chunks[idx]);   // 張數多時不快取，避免吃光記憶體
+    if (!matCache[idx]) matCache[idx] = QR.encodeFlat(chunks[idx]);
+    return matCache[idx];
+  }
+
+  // 目前這個畫面要顯示的 QR ({ n, m })
+  function screenMats() {
+    var mats = [], i, first = curScreen * perScreen;
+    if (fountain) {
+      for (i = 0; i < perScreen; i++) mats.push(QR.encodeFlat(fountainFrame(fountain, first + i)));
+    } else {
+      var last = Math.min(first + perScreen, active.length);
+      for (i = first; i < last; i++) mats.push(getMat(active[i]));
+    }
+    return mats;
+  }
+
+  function setCrisp(c) {
+    c.imageSmoothingEnabled = false;
+    c.msImageSmoothingEnabled = false;
+    c.webkitImageSmoothingEnabled = false;
+    c.mozImageSmoothingEnabled = false;
+  }
+
+  // 不透明黑色在 32 位元像素裡的值 (依位元組順序而定)
+  var PX_BLACK = (new Uint8Array(new Uint32Array([1]).buffer)[0] === 1) ? 0xFF000000 : 0x000000FF;
+  var tmpCache = {};
+  function tmpFor(n) {
+    if (!tmpCache[n]) {
+      var cv = document.createElement('canvas');
+      cv.width = n; cv.height = n;
+      var cx = cv.getContext('2d'), img = cx.createImageData(n, n), d = img.data, i;
+      for (i = 3; i < d.length; i += 4) d[i] = 255;
+      var u32 = null;
+      try { if (d.buffer && d.buffer.byteLength === n * n * 4) u32 = new Uint32Array(d.buffer); } catch (e) { u32 = null; }
+      tmpCache[n] = { cv: cv, cx: cx, img: img, u32: u32 };
+    }
+    return tmpCache[n];
+  }
+
+  // 這個瀏覽器放大小圖時能不能保持銳利 (不能的話退回逐格畫)
+  var crisp = null;
+  function crispWorks() {
+    if (crisp !== null) return crisp;
+    try {
+      var t = tmpFor(2), d = t.img.data, c = document.createElement('canvas'), x, p;
+      d[0] = d[1] = d[2] = 0; d[4] = d[5] = d[6] = 255; d[8] = d[9] = d[10] = 255; d[12] = d[13] = d[14] = 0;
+      t.cx.putImageData(t.img, 0, 0);
+      c.width = 16; c.height = 16;
+      x = c.getContext('2d'); setCrisp(x);
+      x.drawImage(t.cv, 0, 0, 16, 16);
+      p = x.getImageData(0, 0, 16, 16).data;
+      // 交界左右各一像素：(7,3) 應全黑、(8,3) 應全白
+      crisp = (p[(3 * 16 + 7) * 4] === 0 && p[(3 * 16 + 8) * 4] === 255 && p[(12 * 16 + 7) * 4] === 255 && p[(12 * 16 + 8) * 4] === 0);
+    } catch (e) { crisp = false; }
+    return crisp;
+  }
+
+  function drawCode(q, ox, oy, scale) {
+    var n = q.n, m = q.m, i, x, y, runStart, total = n * n;
+    if (crispWorks()) {
+      var t = tmpFor(n), d = t.img.data, u = t.u32, v, j = 0;
+      if (u) { for (i = 0; i < total; i++) u[i] = m[i] ? PX_BLACK : 0xFFFFFFFF; }
+      else { for (i = 0; i < total; i++, j += 4) { v = m[i] ? 0 : 255; d[j] = v; d[j + 1] = v; d[j + 2] = v; } }
+      t.cx.putImageData(t.img, 0, 0);
+      ctx.drawImage(t.cv, 0, 0, n, n, ox, oy, n * scale, n * scale);
+      return;
+    }
+    for (y = 0; y < n; y++) {
+      runStart = -1;
+      for (x = 0; x <= n; x++) {
+        if (x < n && m[y * n + x]) {
+          if (runStart < 0) runStart = x;
+        } else if (runStart >= 0) {
+          ctx.fillRect(ox + runStart * scale, oy + y * scale, (x - runStart) * scale, scale);
+          runStart = -1;
+        }
+      }
+    }
+  }
+
+  function renderScreen() {
+    var tA = nowMs();
+    var mats = screenMats(), i, nMax = 0;
+    var tB = nowMs();
+    for (i = 0; i < mats.length; i++) if (mats[i].n > nMax) nMax = mats[i].n;
+    var QUIET = 4;
+    var cellMods = nMax + QUIET * 2;
+    var availW = Math.max(300, (window.innerWidth || document.documentElement.clientWidth) - 60);
+    var availH = Math.max(300, (window.innerHeight || document.documentElement.clientHeight) - 30);
+
+    // 版面用「每畫面張數」決定 (最後一個畫面張數較少時版面不跳動)，挑每格像素最大的排法
+    var slots = fountain ? perScreen : Math.min(perScreen, active.length);
+    var best = { scale: 0, cols: 1, rows: 1 }, cols, rows, sc;
+    for (cols = 1; cols <= slots; cols++) {
+      rows = Math.ceil(slots / cols);
+      sc = Math.floor(Math.min(availW / cols, availH / rows) / cellMods);
+      if (sc > best.scale) best = { scale: sc, cols: cols, rows: rows };
+    }
+    var scale = Math.min(10, Math.max(2, best.scale));
+    var cell = cellMods * scale;
+    var cw = best.cols * cell, ch = best.rows * cell;
+    if (canvas.width !== cw) canvas.width = cw;
+    if (canvas.height !== ch) canvas.height = ch;
+    setCrisp(ctx);
+    ctx.fillStyle = '#FFFFFF';
+    ctx.fillRect(0, 0, cw, ch);
+    ctx.fillStyle = '#000000';
+    for (i = 0; i < mats.length; i++) {
+      drawCode(mats[i],
+        (i % best.cols) * cell + Math.floor((cell - mats[i].n * scale) / 2),
+        Math.floor(i / best.cols) * cell + Math.floor((cell - mats[i].n * scale) / 2),
+        scale);
+    }
+    accEnc += tB - tA; accDraw += nowMs() - tB;
+    return { scale: scale, version: (nMax - 17) / 4 };
+  }
+
+  function updateUI(force) {
+    if (!hasData()) return;
+    var info;
+    try { info = renderScreen(); }
+    catch (err) { stopPlay(); alert(err.message); return; }
+    var tn = nowMs();
+    if (playing && !force && tn - lastText < 300) return;
+    lastText = tn;
+    var first = curScreen * perScreen, sub, single;
+    if (fountain) {
+      var range = (perScreen > 1) ? ((first + 1) + '–' + (first + perScreen)) : String(first + 1);
+      var tail = (first >= fountain.N) ? '（原文已播完一輪，持續播補償碼，手機顯示收齊即可停）' : '';
+      setText('statusText', rawFileName + ' — 噴泉碼 第 ' + range + ' 張｜原文共 ' + fountain.N + ' 塊' + tail);
+      sub = '原始大小: ' + rawFileBytes.length + ' Bytes | CRC32: ' + rawCrc + ' | 每張資料: ' + fountain.K + ' Bytes';
+      single = false;
+    } else {
+      var last = Math.min(first + perScreen, active.length);
+      var nums = [], k;
+      for (k = first; k < last; k++) nums.push(active[k] + 1);
+      var pageTxt = '第 ' + nums.join('、') + ' 張 / 共 ' + chunks.length + ' 張';
+      var partial = (active.length < chunks.length) ? '｜補播 ' + active.length + ' 張' : '';
+      setText('statusText', rawFileName + ' — ' + pageTxt + '（畫面 ' + (curScreen + 1) + ' / ' + screenCount() + partial + '）');
+      sub = '原始大小: ' + rawFileBytes.length + ' Bytes | CRC32: ' + rawCrc + ' | 本張: ' + chunks[active[first]].length + ' Bytes';
+      single = (screenCount() <= 1);
+    }
+    sub += ' | QR Version ' + info.version + ' | 每格 ' + info.scale + ' 像素';
+    if (info.scale < 3) sub += '（偏小，掃不到請減少每畫面張數或單張容量）';
+    if (rateTxt) sub += ' | ' + rateTxt;
+    if (buildNote) sub += ' | ' + buildNote;
+    setText('subInfo', sub);
+    $('prevBtn').disabled = single;
+    $('nextBtn').disabled = single;
+    $('playBtn').disabled = single;
+  }
+
+  function prevScreen() {
+    if (!hasData()) return;
+    if (fountain) curScreen = Math.max(0, curScreen - 1);
+    else curScreen = (curScreen - 1 + screenCount()) % screenCount();
+    updateUI();
+  }
+
+  function nextScreen() {
+    if (!hasData()) return;
+    if (fountain) curScreen = ((curScreen + 2) * perScreen > MAX_SEED) ? 0 : curScreen + 1;
+    else curScreen = (curScreen + 1) % screenCount();
+    updateUI();
+  }
+
+  function nowMs() {
+    return (window.performance && performance.now) ? performance.now() : new Date().getTime();
+  }
+
+  var playing = false, nextDue = 0, lastText = 0, loopTimer = null;
+  var rateT = 0, rateN = 0, rateTxt = '', accEnc = 0, accDraw = 0;
+
+  function stopPlay() {
+    playing = false;
+    if (loopTimer) { clearTimeout(loopTimer); loopTimer = null; }
+    rateT = 0; rateN = 0; rateTxt = '';
+    setText('playBtn', '自動輪播');
+  }
+
+  // 用計時器照「理想時間表」換頁：某一次晚到，下一次的等待就縮短，平均速度維持在設定值；
+  // 電腦真的畫不完時就一張接一張畫，不累積欠帳。
+  // (不用 requestAnimationFrame：在遠端桌面或虛擬機上它的節拍可能很慢)
+  function frameLoop() {
+    loopTimer = null;
+    if (!playing) return;
+    var now = nowMs(), ms = parseInt($('speedSel').value, 10);
+    if (now >= nextDue - 2) {
+      nextDue += ms;
+      if (nextDue < now) nextDue = now;
+      if (fountain) curScreen = ((curScreen + 2) * perScreen > MAX_SEED) ? 0 : curScreen + 1;
+      else curScreen = (curScreen + 1) % screenCount();
+      rateN++;
+      if (!rateT) { rateT = now; rateN = 0; accEnc = 0; accDraw = 0; }
+      else if (now - rateT >= 2000 && rateN > 0) {
+        rateTxt = '實際每秒 ' + (rateN * 1000 / (now - rateT)).toFixed(1) + ' 畫面（每畫面編碼 ' +
+                  (accEnc / rateN).toFixed(0) + ' ms、畫圖 ' + (accDraw / rateN).toFixed(0) + ' ms）';
+        rateT = now; rateN = 0; accEnc = 0; accDraw = 0;
+      }
+      updateUI(false);
+      now = nowMs();
+    }
+    var wait = nextDue - now;
+    loopTimer = setTimeout(frameLoop, wait < 1 ? 1 : wait);
+  }
+
+  function togglePlay() {
+    if (playing) {
+      stopPlay();
+      updateUI(true);
+    } else if (hasData()) {
+      playing = true;
+      nextDue = nowMs() + parseInt($('speedSel').value, 10);
+      setText('playBtn', '暫停輪播');
+      loopTimer = setTimeout(frameLoop, 1);
+    }
+  }
+
+  $('prevBtn').onclick = prevScreen;
+  $('nextBtn').onclick = nextScreen;
+  $('playBtn').onclick = togglePlay;
+  $('onlyBtn').onclick = applyOnlyPages;
+  $('allBtn').onclick = function () { $('onlyPages').value = ''; if (!fountain) applyOnlyPages(); };
+  $('onlyPages').onkeydown = function (e) { e = e || window.event; if (e.keyCode === 13) applyOnlyPages(); };
+  $('chunkSizeSel').onchange = rebuildChunks;
+  $('perScreenSel').onchange = rebuildChunks;
+  $('formatSel').onchange = rebuildChunks;
+  $('quickText').oninput = fromTextInput;
+  $('quickText').onkeyup = fromTextInput;   // IE 的 input 事件在刪除字元時不一定觸發
+  $('quickText').onpaste = function () { setTimeout(fromTextInput, 0); };
+
+  var resizeTimer = null;
+  window.onresize = function () {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(function () { if (hasData()) updateUI(); }, 150);
+  };
+
+  $('statusText').style.color = '';
+  // 預設展示一張歡迎 QR Code
+  $('quickText').value = 'Hello from Windows Server Offline QR Sender!';
+  fromTextInput();
+})();
+</script>
+</body>
+</html>
