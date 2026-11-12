@@ -67,14 +67,6 @@
     <div class="sub" id="missing"></div>
     <div id="missBox" hidden style="margin:6px 0 10px"><div id="missList"></div></div>
     <div id="grid"></div>
-    <div id="encBox" hidden style="margin:10px 0">
-      <div class="sub" id="encMsg" style="font-size:15px;color:#ffab40">這是加密檔，請輸入傳送端設定的密碼後按「解密」。</div>
-      <div class="row">
-        <input type="password" id="rxPass" placeholder="密碼" autocomplete="off" style="flex:1;min-width:140px;padding:10px 14px;border-radius:8px;border:1px solid #444;background:#3a3b3c;color:#fff;font-size:15px">
-        <button class="primary" id="rxDecrypt">解密</button>
-      </div>
-    </div>
-
     <div id="doneBox" hidden style="margin-top:12px">
       <a id="dl" class="good">下載檔案</a>
       <div class="sub" id="doneInfo"></div>
@@ -103,7 +95,7 @@
       噴泉碼會自動驗證 SHA-256（傳送端有附的話）；壓縮過的內容會自動解壓。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
-    <div class="sub" id="buildInfo">接收頁版本 2026-11-13a</div>
+    <div class="sub" id="buildInfo">接收頁版本 2026-11-12f</div>
   </div>
 </div>
 
@@ -154,178 +146,6 @@ var LT = (function () {
 })();
 /*LT-END*/
 
-/*CRYPTO-BEGIN*/
-/* 加密共用核心（傳送端與接收端必須一字不差；純 ES5，IE11 可執行）
-   - SHA-256、HMAC-SHA256、PBKDF2-HMAC-SHA256、ChaCha20 (RFC 8439)
-   - 加密容器：PBKDF2 由密碼導出金鑰，ChaCha20 串流加密
-   容器格式（位元組）：
-     [0]      0xE1  加密容器標記
-     [1]      1     容器版本
-     [2..5]   iters 迭代次數 (uint32 大端序)
-     [6..21]  salt  16 位元組
-     [22..33] nonce 12 位元組
-     [34..]   ciphertext = ChaCha20(key, nonce, counter=0, 明文)
-   金鑰 = PBKDF2-HMAC-SHA256(密碼 UTF-8, salt, iters, 32 位元組)
-   明文的 SHA-256 另外放在被加密的內層資料流裡，解密後比對＝可偵測密碼錯誤 */
-
-// SHA-256。bytes: 陣列或 Uint8Array；回傳 32 位元組的 Uint8Array
-function sha256(bytes) {
-  var K = sha256.K;
-  var H0 = 0x6a09e667 | 0, H1 = 0xbb67ae85 | 0, H2 = 0x3c6ef372 | 0, H3 = 0xa54ff53a | 0;
-  var H4 = 0x510e527f | 0, H5 = 0x9b05688c | 0, H6 = 0x1f83d9ab | 0, H7 = 0x5be0cd19 | 0;
-  var w = new Int32Array(64), len = bytes.length, i, off;
-  function block(buf, o) {
-    var a = H0, b = H1, c = H2, d = H3, e = H4, f = H5, g = H6, h = H7, t, x, s0, s1, t1, t2;
-    for (t = 0; t < 16; t++, o += 4) w[t] = (buf[o] << 24) | (buf[o + 1] << 16) | (buf[o + 2] << 8) | buf[o + 3];
-    for (t = 16; t < 64; t++) {
-      x = w[t - 15]; s0 = ((x >>> 7) | (x << 25)) ^ ((x >>> 18) | (x << 14)) ^ (x >>> 3);
-      x = w[t - 2]; s1 = ((x >>> 17) | (x << 15)) ^ ((x >>> 19) | (x << 13)) ^ (x >>> 10);
-      w[t] = (w[t - 16] + s0 + w[t - 7] + s1) | 0;
-    }
-    for (t = 0; t < 64; t++) {
-      s1 = ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
-      t1 = (h + s1 + ((e & f) ^ (~e & g)) + K[t] + w[t]) | 0;
-      s0 = ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
-      t2 = (s0 + ((a & b) ^ (a & c) ^ (b & c))) | 0;
-      h = g; g = f; f = e; e = (d + t1) | 0; d = c; c = b; b = a; a = (t1 + t2) | 0;
-    }
-    H0 = (H0 + a) | 0; H1 = (H1 + b) | 0; H2 = (H2 + c) | 0; H3 = (H3 + d) | 0;
-    H4 = (H4 + e) | 0; H5 = (H5 + f) | 0; H6 = (H6 + g) | 0; H7 = (H7 + h) | 0;
-  }
-  var full = len - (len % 64);
-  for (off = 0; off < full; off += 64) block(bytes, off);
-  var rest = len - full, tailLen = (rest + 9 > 64) ? 128 : 64, tail = new Uint8Array(tailLen);
-  for (i = 0; i < rest; i++) tail[i] = bytes[full + i];
-  tail[rest] = 0x80;
-  var hi = Math.floor(len / 536870912), lo = (len << 3) >>> 0;
-  tail[tailLen - 8] = (hi >>> 24) & 255; tail[tailLen - 7] = (hi >>> 16) & 255; tail[tailLen - 6] = (hi >>> 8) & 255; tail[tailLen - 5] = hi & 255;
-  tail[tailLen - 4] = (lo >>> 24) & 255; tail[tailLen - 3] = (lo >>> 16) & 255; tail[tailLen - 2] = (lo >>> 8) & 255; tail[tailLen - 1] = lo & 255;
-  for (off = 0; off < tailLen; off += 64) block(tail, off);
-  var out = new Uint8Array(32), Hs = [H0, H1, H2, H3, H4, H5, H6, H7];
-  for (i = 0; i < 8; i++) { out[i * 4] = (Hs[i] >>> 24) & 255; out[i * 4 + 1] = (Hs[i] >>> 16) & 255; out[i * 4 + 2] = (Hs[i] >>> 8) & 255; out[i * 4 + 3] = Hs[i] & 255; }
-  return out;
-}
-sha256.K = [0x428a2f98 | 0, 0x71374491 | 0, 0xb5c0fbcf | 0, 0xe9b5dba5 | 0, 0x3956c25b | 0, 0x59f111f1 | 0, 0x923f82a4 | 0, 0xab1c5ed5 | 0, 0xd807aa98 | 0, 0x12835b01 | 0, 0x243185be | 0, 0x550c7dc3 | 0, 0x72be5d74 | 0, 0x80deb1fe | 0, 0x9bdc06a7 | 0, 0xc19bf174 | 0, 0xe49b69c1 | 0, 0xefbe4786 | 0, 0x0fc19dc6 | 0, 0x240ca1cc | 0, 0x2de92c6f | 0, 0x4a7484aa | 0, 0x5cb0a9dc | 0, 0x76f988da | 0, 0x983e5152 | 0, 0xa831c66d | 0, 0xb00327c8 | 0, 0xbf597fc7 | 0, 0xc6e00bf3 | 0, 0xd5a79147 | 0, 0x06ca6351 | 0, 0x14292967 | 0, 0x27b70a85 | 0, 0x2e1b2138 | 0, 0x4d2c6dfc | 0, 0x53380d13 | 0, 0x650a7354 | 0, 0x766a0abb | 0, 0x81c2c92e | 0, 0x92722c85 | 0, 0xa2bfe8a1 | 0, 0xa81a664b | 0, 0xc24b8b70 | 0, 0xc76c51a3 | 0, 0xd192e819 | 0, 0xd6990624 | 0, 0xf40e3585 | 0, 0x106aa070 | 0, 0x19a4c116 | 0, 0x1e376c08 | 0, 0x2748774c | 0, 0x34b0bcb5 | 0, 0x391c0cb3 | 0, 0x4ed8aa4a | 0, 0x5b9cca4f | 0, 0x682e6ff3 | 0, 0x748f82ee | 0, 0x78a5636f | 0, 0x84c87814 | 0, 0x8cc70208 | 0, 0x90befffa | 0, 0xa4506ceb | 0, 0xbef9a3f7 | 0, 0xc67178f2 | 0];
-
-function bytesToHex(b) {
-  var s = '', i, h;
-  for (i = 0; i < b.length; i++) { h = b[i].toString(16); s += (h.length < 2 ? '0' : '') + h; }
-  return s;
-}
-
-// PBKDF2-HMAC-SHA256，輸出 dkLen (<=32) 位元組
-function pbkdf2Sha256(pass, salt, iters, dkLen) {
-  var bs = 64, key = pass, i, k;
-  if (key.length > bs) key = sha256(key);
-  var ib = new Uint8Array(bs + 32), ob = new Uint8Array(bs + 32);   // [padded key | 32 位元組訊息]
-  for (i = 0; i < bs; i++) { var kb = (i < key.length) ? key[i] : 0; ib[i] = kb ^ 0x36; ob[i] = kb ^ 0x5c; }
-  // U1 = HMAC(pass, salt || INT_32_BE(1))
-  var m1 = new Uint8Array(bs + salt.length + 4);
-  for (i = 0; i < bs; i++) m1[i] = ib[i];
-  for (i = 0; i < salt.length; i++) m1[bs + i] = salt[i];
-  m1[bs + salt.length + 3] = 1;
-  var inner = sha256(m1);
-  for (i = 0; i < 32; i++) ob[bs + i] = inner[i];
-  var u = sha256(ob);
-  var t = new Uint8Array(32);
-  for (i = 0; i < 32; i++) t[i] = u[i];
-  for (var it = 1; it < iters; it++) {
-    for (i = 0; i < 32; i++) ib[bs + i] = u[i];
-    inner = sha256(ib);
-    for (i = 0; i < 32; i++) ob[bs + i] = inner[i];
-    u = sha256(ob);
-    for (k = 0; k < 32; k++) t[k] ^= u[k];
-  }
-  return t.subarray(0, dkLen);
-}
-
-// ChaCha20 (RFC 8439)。key:32B, nonce:12B, counter:uint32；回傳 data XOR keystream
-function chacha20(key, nonce, counter, data) {
-  function le32(b, o) { return (b[o] | (b[o + 1] << 8) | (b[o + 2] << 16) | (b[o + 3] << 24)) >>> 0; }
-  function rotl(v, c) { return ((v << c) | (v >>> (32 - c))) | 0; }
-  var j = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574,
-           le32(key, 0), le32(key, 4), le32(key, 8), le32(key, 12),
-           le32(key, 16), le32(key, 20), le32(key, 24), le32(key, 28),
-           counter | 0, le32(nonce, 0), le32(nonce, 4), le32(nonce, 8)];
-  var out = new Uint8Array(data.length), block = new Uint8Array(64);
-  var x = new Int32Array(16), pos = 0, i, r, v, lim, p;
-  function qr(a, b, c, d) {
-    x[a] = (x[a] + x[b]) | 0; x[d] = rotl(x[d] ^ x[a], 16);
-    x[c] = (x[c] + x[d]) | 0; x[b] = rotl(x[b] ^ x[c], 12);
-    x[a] = (x[a] + x[b]) | 0; x[d] = rotl(x[d] ^ x[a], 8);
-    x[c] = (x[c] + x[d]) | 0; x[b] = rotl(x[b] ^ x[c], 7);
-  }
-  while (pos < data.length) {
-    for (i = 0; i < 16; i++) x[i] = j[i];
-    for (r = 0; r < 10; r++) {
-      qr(0, 4, 8, 12); qr(1, 5, 9, 13); qr(2, 6, 10, 14); qr(3, 7, 11, 15);
-      qr(0, 5, 10, 15); qr(1, 6, 11, 12); qr(2, 7, 8, 13); qr(3, 4, 9, 14);
-    }
-    for (i = 0; i < 16; i++) {
-      v = (x[i] + j[i]) | 0;
-      block[i * 4] = v & 255; block[i * 4 + 1] = (v >>> 8) & 255; block[i * 4 + 2] = (v >>> 16) & 255; block[i * 4 + 3] = (v >>> 24) & 255;
-    }
-    lim = Math.min(64, data.length - pos);
-    for (p = 0; p < lim; p++) out[pos + p] = data[pos + p] ^ block[p];
-    pos += 64;
-    j[12] = (j[12] + 1) | 0;
-  }
-  return out;
-}
-
-// CSPRNG；取不到時丟錯（絕不用 Math.random 做加密）
-function cryptoRandom(n) {
-  var cs = (typeof window !== 'undefined') ? (window.crypto || window.msCrypto) : null;
-  if (cs && cs.getRandomValues) { var a = new Uint8Array(n); cs.getRandomValues(a); return a; }
-  if (typeof require !== 'undefined') { return new Uint8Array(require('crypto').randomBytes(n)); }   // 只在 Node 測試用
-  throw new Error('此瀏覽器無法安全產生隨機金鑰');
-}
-
-function utf8Bytes(str) {
-  var s, out, i;
-  try { s = unescape(encodeURIComponent(str)); } catch (e) { s = str; }
-  out = new Uint8Array(s.length);
-  for (i = 0; i < s.length; i++) out[i] = s.charCodeAt(i) & 255;
-  return out;
-}
-
-function isEncryptedContainer(stream) {
-  return stream && stream.length >= 34 && stream[0] === 0xE1 && stream[1] === 1;
-}
-
-// 加密：inner（內層資料流）→ 容器位元組。passBytes = 密碼 UTF-8
-function encryptContainer(inner, passBytes, iters) {
-  var rnd = cryptoRandom(28), salt = rnd.subarray(0, 16), nonce = rnd.subarray(16, 28);
-  var key = pbkdf2Sha256(passBytes, salt, iters, 32);
-  var ct = chacha20(key, nonce, 0, inner);
-  var out = new Uint8Array(34 + ct.length), i;
-  out[0] = 0xE1; out[1] = 1;
-  out[2] = (iters >>> 24) & 255; out[3] = (iters >>> 16) & 255; out[4] = (iters >>> 8) & 255; out[5] = iters & 255;
-  for (i = 0; i < 16; i++) out[6 + i] = salt[i];
-  for (i = 0; i < 12; i++) out[22 + i] = nonce[i];
-  out.set(ct, 34);
-  return out;
-}
-
-// 解密（純 JS，供測試與備援）。回傳 inner
-function decryptContainer(container, passBytes) {
-  var iters = ((container[2] << 24) | (container[3] << 16) | (container[4] << 8) | container[5]) >>> 0;
-  var salt = container.subarray(6, 22), nonce = container.subarray(22, 34), ct = container.subarray(34);
-  var key = pbkdf2Sha256(passBytes, salt, iters, 32);
-  return chacha20(key, nonce, 0, ct);
-}
-
-// 解析容器參數（供接收端用 WebCrypto 導金鑰）
-function containerParams(container) {
-  return {
-    iters: ((container[2] << 24) | (container[3] << 16) | (container[4] << 8) | container[5]) >>> 0,
-    salt: container.subarray(6, 22),
-    nonce: container.subarray(22, 34),
-    ct: container.subarray(34)
-  };
-}
-/*CRYPTO-END*/
-
 (function () {
   'use strict';
   var $ = function (id) { return document.getElementById(id); };
@@ -340,7 +160,6 @@ function containerParams(container) {
   var plainSeen = {};
   var blobUrl = null;
   var missingText = '';
-  var encPending = null;   // 收到加密容器、等待密碼時：{ container, frames, N, mine }
   var lastResult = null;
 
   /* ---------------- 傳輸時間 ---------------- */
@@ -424,8 +243,8 @@ function containerParams(container) {
     a.textContent = '下載 ' + name;
     $('doneInfo').textContent = '大小 ' + bytes.length + ' Bytes | CRC32: ' + crc + note;
     $('doneBox').hidden = false;
-    if (tStart) {
-      if (!tEnd) tEnd = Date.now();                      // tEnd＝QR 傳輸收齊的時間（不含解密/輸入密碼）
+    if (tStart && !tEnd) {
+      tEnd = Date.now();
       var el = Math.max(0.001, (tEnd - tStart) / 1000);
       $('timeInfo').textContent = '傳輸時間 ' + fmtDur(el) + '｜' + fmtSize(bytes.length) + '｜平均 ' + fmtRate(bytes.length / el) + rxStats(el);
     }
@@ -551,7 +370,6 @@ function containerParams(container) {
       cur = null;
       clearResult();
       startClock();
-      encPending = null; $('encBox').hidden = true; $('rxPass').value = '';
       $('grid').innerHTML = ''; $('missing').textContent = ''; $('missBox').hidden = true; missingText = '';
     }
     if (ft.done || ft.seen.has(seed)) return false;
@@ -648,101 +466,40 @@ function containerParams(container) {
       ft.buf = null;
     }
     if (crc32(stream) !== ft.crc) { ftFail('CRC32 驗證失敗，'); return; }
-    if (tStart && !tEnd) tEnd = Date.now();
-    var frames = ft.frames, Ndone = N, mine = ft;
-    if (ft.ver >= 2 && isEncryptedContainer(stream)) {
-      encPending = { container: stream.slice(0), frames: frames, N: Ndone, mine: mine };
-      $('status').textContent = '收齊（加密）— 請輸入密碼解開';
-      showEncPrompt('', false);
-      $('rxPass').focus();
-      return;
-    }
-    processInner(stream, frames, Ndone, mine, false, '｜傳輸 CRC32 驗證通過');
-  }
 
-  // 解析內層資料流 (旗標/檔名/SHA/gzip)，驗證後下載。encrypted=true 時失敗訊息＝密碼錯誤
-  function processInner(stream, frames, N, mine, encrypted, baseNote) {
-    function fail(msg) { if (ft === mine) { if (encrypted) encFail(msg); else ftFail(msg); } }
     var flags = 0, pos = 0, sha = null, origLen = -1, name = 'download.bin', nl;
-    if (mine.ver >= 2) flags = stream[pos++];
-    if (encrypted && !(flags & 2)) { fail('密碼錯誤或檔案損毀'); return; }
-    if (flags & ~3) { fail(encrypted ? '密碼錯誤或檔案損毀' : '資料損毀'); return; }
+    if (ft.ver >= 2) flags = stream[pos++];
     nl = (stream[pos] << 8) | stream[pos + 1]; pos += 2;
-    if (nl > 2000 || pos + nl > stream.length) { fail('密碼錯誤或檔案損毀'); return; }
     try { name = new TextDecoder().decode(stream.subarray(pos, pos + nl)) || name; } catch (e) {}
     pos += nl;
     if (flags & 2) { sha = stream.subarray(pos, pos + 32); pos += 32; }
     if (flags & 1) { origLen = ((stream[pos] << 24) | (stream[pos + 1] << 16) | (stream[pos + 2] << 8) | stream[pos + 3]) >>> 0; pos += 4; }
-    if (pos > stream.length) { fail('密碼錯誤或檔案損毀'); return; }
-    var payload = stream.subarray(pos), note = baseNote;
+    var payload = stream.subarray(pos), frames = ft.frames, mine = ft, note = '｜傳輸 CRC32 驗證通過';
+
     var step = Promise.resolve(payload);
     if (flags & 1) {
       step = gunzip(payload).then(function (file) {
-        if (file.length !== origLen) throw new Error(encrypted ? '密碼錯誤或檔案損毀' : '解壓後大小不符');
+        if (file.length !== origLen) throw new Error('解壓後大小不符');
         note += '｜已解壓（傳輸 ' + payload.length + ' → 原始 ' + file.length + ' Bytes）';
         return file;
       });
     }
     step.then(function (file) {
       if (!sha) return file;
-      var want = hexOf(sha);
-      if (window.crypto && crypto.subtle && window.Promise) {
-        return crypto.subtle.digest('SHA-256', file).then(function (h) {
-          if (hexOf(new Uint8Array(h)) !== want) throw new Error(encrypted ? '密碼錯誤或檔案損毀' : 'SHA-256 不符（收到的檔案與原始檔不同）');
-          note += '｜SHA-256 驗證通過：' + want;
-          return file;
-        });
-      }
-      if (bytesToHex(sha256(file)) !== want) throw new Error(encrypted ? '密碼錯誤或檔案損毀' : 'SHA-256 不符');
-      note += '｜SHA-256 驗證通過：' + want;
-      return file;
+      if (!(window.crypto && crypto.subtle)) { note += '｜這個瀏覽器無法計算 SHA-256，未驗證'; return file; }
+      return crypto.subtle.digest('SHA-256', file).then(function (h) {
+        var got = hexOf(new Uint8Array(h)), want = hexOf(sha);
+        if (got !== want) throw new Error('SHA-256 不符（收到的檔案與原始檔不同）');
+        note += '｜SHA-256 驗證通過：' + got;
+        return file;
+      });
     }).then(function (file) {
-      if (ft !== mine) return;
-      $('encBox').hidden = true; encPending = null;
-      $('status').textContent = name + ' — 收齊（共收 ' + frames + ' 張，原文 ' + N + ' 塊）' + (encrypted ? '、已解密' : '') + '，可以下載';
+      if (ft !== mine) return;                               // 驗證期間使用者按了清除
+      $('status').textContent = name + ' — 收齊（共收 ' + frames + ' 張，原文 ' + N + ' 塊），可以下載';
       deliver(name, file, note);
     }).catch(function (e) {
-      fail((e && e.message || e) + '');
+      if (ft === mine) ftFail((e && e.message || e) + '，');
     });
-  }
-
-  // 由密碼導出 32 位元組金鑰：優先用瀏覽器內建 PBKDF2，沒有再用純 JS
-  function deriveKey(passBytes, container, cb) {
-    var p = containerParams(container);
-    if (window.crypto && crypto.subtle && window.Promise) {
-      try {
-        crypto.subtle.importKey('raw', passBytes, { name: 'PBKDF2' }, false, ['deriveBits']).then(function (k) {
-          return crypto.subtle.deriveBits({ name: 'PBKDF2', salt: p.salt, iterations: p.iters, hash: 'SHA-256' }, k, 256);
-        }).then(function (bits) { cb(new Uint8Array(bits)); }, function () { cb(pbkdf2Sha256(passBytes, p.salt, p.iters, 32)); });
-        return;
-      } catch (e) {}
-    }
-    cb(pbkdf2Sha256(passBytes, p.salt, p.iters, 32));
-  }
-
-  function tryDecrypt(passStr) {
-    if (!encPending || $('rxDecrypt').disabled) return;
-    var ep = encPending, passBytes = utf8Bytes(passStr || '');
-    if (!passBytes.length) { encFail('請輸入密碼'); return; }
-    showEncPrompt('解密中…', true);
-    setTimeout(function () {
-      deriveKey(passBytes, ep.container, function (key) {
-        if (ft !== ep.mine) return;
-        var p = containerParams(ep.container), inner;
-        try { inner = chacha20(key, p.nonce, 0, p.ct); } catch (e) { encFail('解密失敗'); return; }
-        processInner(inner, ep.frames, ep.N, ep.mine, true, '｜已解密（ChaCha20）');
-      });
-    }, 30);
-  }
-
-  function showEncPrompt(msg, busy) {
-    $('encBox').hidden = false;
-    $('encMsg').textContent = msg || '這是加密檔，請輸入傳送端設定的密碼後按「解密」。';
-    $('rxDecrypt').disabled = !!busy;
-  }
-  function encFail(msg) {
-    $('encMsg').innerHTML = '<span class="err">' + msg + '，請重新輸入密碼。</span>';
-    $('rxDecrypt').disabled = false;
   }
 
   function resetAll() {
@@ -753,7 +510,6 @@ function containerParams(container) {
     $('barIn').style.width = '0';
     $('status').textContent = '尚未收到資料';
     $('textCard').hidden = true; $('plain').value = '';
-    encPending = null; $('encBox').hidden = true; $('rxPass').value = '';
   }
 
   /* ---------------- 解碼引擎 ---------------- */
@@ -1025,8 +781,6 @@ function containerParams(container) {
   }
 
   $('startBtn').onclick = start;
-  $('rxDecrypt').onclick = function () { tryDecrypt($('rxPass').value); };
-  $('rxPass').onkeydown = function (e) { e = e || window.event; if (e.keyCode === 13) tryDecrypt($('rxPass').value); };
   try { var savedFps = localStorage.getItem('qrCam'); if (/^(1080p30|1080p60|720p60|4k30)$/.test(savedFps || '')) $('fpsSel').value = savedFps; } catch (e) {}
   $('fpsSel').onchange = function () {
     try { localStorage.setItem('qrCam', $('fpsSel').value); } catch (e) {}

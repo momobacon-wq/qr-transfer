@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta http-equiv="X-UA-Compatible" content="IE=edge">
-<title>G11</title>
+<title>離線標準 QR Code 傳檔工具 (IE11 / ES5 版)</title>
 <style>
   * { box-sizing: border-box; font-family: "Microsoft JhengHei", "Segoe UI", Arial, sans-serif; }
   body { margin: 0; padding: 12px; background: #18191a; color: #e4e6eb; text-align: center; }
@@ -16,11 +16,10 @@
   button.primary { background: #2e89ff; border: 1px solid #2e89ff; }
   button:disabled { opacity: 0.4; cursor: not-allowed; }
   #qrWrap { background: #fff; padding: 0; border-radius: 6px; display: inline-block; margin: 8px 0; max-width: 100%; overflow: auto; }
-  #qrWrap.fs { display: block; width: 100%; height: 100%; max-width: none; margin: 0; border-radius: 0; overflow: hidden; cursor: pointer; }
-  #qrWrap.fs canvas { margin: 0 auto; }
   canvas { display: block; }
   .status { font-size: 16px; font-weight: bold; color: #45bd62; margin: 6px 0; }
   .sub-info { font-size: 13px; color: #b0b3b8; margin-bottom: 6px; }
+  .helper-box { text-align: left; background: #111; padding: 12px; border-radius: 8px; font-size: 13px; color: #ccc; margin-top: 12px; line-height: 1.6; }
   code { background: #2d2d2d; padding: 2px 6px; border-radius: 4px; color: #ffab40; font-family: Consolas, monospace; word-break: break-all; }
   textarea { width: 100%; }
 </style>
@@ -43,15 +42,13 @@
     </label>
     <label>每畫面張數:
       <select id="perScreenSel">
-        <option value="1">1 張</option>
+        <option value="1" selected>1 張</option>
         <option value="2">2 張</option>
         <option value="4">4 張</option>
         <option value="6">6 張</option>
         <option value="8">8 張</option>
         <option value="12">12 張</option>
         <option value="16">16 張</option>
-        <option value="24">24 張 (6x4)</option>
-        <option value="28" selected>28 張 (7x4，搭配 1200 位元組)</option>
       </select>
     </label>
   </div>
@@ -59,8 +56,12 @@
   <div class="row">
     <label>編碼格式:
       <select id="formatSel">
-        <option value="fountain" selected>噴泉碼・二進位 (傳檔案用，最快，不怕漏張)</option>
-        <option value="rawtext">純文字直出 (傳一段文字 / 設定檔 / 金鑰，掃了直接讀)</option>
+        <option value="fountain" selected>噴泉碼・二進位 (最快，不怕漏張；要用接收網頁)</option>
+        <option value="fountaintxt">噴泉碼・文字 (不怕漏張；接收網頁可選系統內建引擎，容量少 1/4)</option>
+        <option value="tagged">帶頁碼標籤 [頁/總頁|檔名|Base64] (防漏頁、亂序可重組)</option>
+        <option value="b64">分段純 Base64 (只適合每畫面 1 張、依序掃描)</option>
+        <option value="dataurl">單張 DataURL 直出 (小檔案貼入手機瀏覽器直接下載)</option>
+        <option value="rawtext">純文字直出 (直接傳送 .txt / 腳本 / 設定檔內容)</option>
       </select>
     </label>
   </div>
@@ -71,7 +72,6 @@
   <div class="row">
     <button id="prevBtn" disabled>|&lt; 上一畫面</button>
     <button class="primary" id="playBtn" disabled>自動輪播</button>
-    <button id="fsBtn">全螢幕只顯示 QR</button>
     <button id="nextBtn" disabled>下一畫面 &gt;|</button>
     <label>輪播間隔:
       <select id="speedSel">
@@ -80,12 +80,20 @@
         <option value="800">0.8 秒/畫面</option>
         <option value="400">0.4 秒/畫面</option>
         <option value="200">0.2 秒/畫面</option>
-        <option value="100">0.1 秒/畫面</option>
+        <option value="100" selected>0.1 秒/畫面</option>
         <option value="66">0.066 秒/畫面</option>
-        <option value="50" selected>0.05 秒/畫面</option>
+        <option value="50">0.05 秒/畫面</option>
         <option value="33">0.033 秒/畫面 (每秒 30)</option>
       </select>
     </label>
+  </div>
+
+  <div class="row">
+    <label>只補播這幾張:
+      <input type="text" id="onlyPages" size="28" placeholder="例如 7,12,19-22（留空＝全部）">
+    </label>
+    <button id="onlyBtn">只播這幾張</button>
+    <button id="allBtn">恢復全部</button>
   </div>
 
   <div id="hashInfo" class="sub-info"></div>
@@ -98,7 +106,19 @@
     <textarea id="quickText" rows="2" placeholder="或者直接在此貼上要傳到手機的文字 / Config / 金鑰，即時轉成 QR Code..."></textarea>
   </div>
 
-  <!-- 版本 2026-11-12h -->
+  <div class="helper-box">
+    <b>版本 2026-11-12b</b>（要搭配同日或更新的接收頁；舊接收頁請重新整理）。上一版留在 <code>sender-ie11-prev.html</code>。<br>
+    <b>完整性：</b>噴泉碼會把檔案的 SHA-256 一起傳過去，手機收齊後自動比對；上方也會顯示 SHA-256 供人工核對。<br>
+    <b>壓縮：</b>瀏覽器支援時（Chrome、Edge）會先試 gzip 壓縮，變小才採用，手機端自動解壓。PDF、zip、圖片這類已壓縮的檔案不會變小。IE 沒有這個功能，照原樣傳。<br>
+    <b>大檔案：</b>補償張改成分組編碼，手機的運算量和記憶體跟檔案大小成正比。<br>
+    <b>噴泉碼（預設）：</b>畫面會不斷播出新的編碼張，手機用接收網頁對著掃，漏掉哪幾張都沒關係，收到的張數夠了就自動還原並驗證 CRC32，不需要補頁，也不必從頭開始對。先播完一輪原文，之後持續播補償碼，手機顯示收齊就可以停。掃不太到時把輪播間隔調慢或單張容量調小。<br>
+    <b>容量說明：</b>單張標準 QR Code 的物理上限是 2,953 位元組（Version 40、容錯 L），所以單張無法再放大 10 倍。單張容量最大可選 2,900，並可讓一個畫面同時顯示多張（4 張 x 2,900 = 每畫面約 11,600 位元組）；預設是 1 張 x 1,200 搭配 0.1 秒高速輪播，螢幕夠大、手機掃得到再往上調。<br>
+    <b>掃不到時：</b>Version 40 每邊 177 格，螢幕解析度不夠時每格只剩 2 像素，手機不易對焦。請先把「每畫面張數」降到 2 或 1，再不行把「單張容量」降到 2000 或 1200；瀏覽器視窗請最大化（F11 全螢幕更好）。<br>
+    <b>多張同畫面：</b>掃描順序不固定，所以請用「帶頁碼標籤」格式，手機端依 <code>頁/總頁|檔名|資料</code> 的頁碼排序後，把資料段接起來再做 Base64 解碼。選多張時「分段純 Base64」會自動改成帶頁碼標籤。<br>
+    <b>補漏頁：</b>接收網頁會列出還缺的頁碼（例如 <code>7,12,19-22</code>），把它打進上方「只補播這幾張」再按「只播這幾張」，就只輪播缺的那幾張；按「恢復全部」回到整份。<br>
+    <b>小檔案（&lt; 2.1 KB）：</b>選「單張 DataURL 直出」，掃描後把 <code>data:...</code> 貼到手機瀏覽器網址列即可下載。<br>
+    <b>還原：</b>手機開接收網頁，鏡頭對著本畫面輪播到收齊，網頁會自動排序、解碼、下載，並顯示 CRC32；與上方狀態列的 CRC32 相同就代表檔案完整。沒有接收網頁時，合併後的 Base64 文字可用 iOS 捷徑（Base64 解碼 → 儲存檔案）或 Termux <code>base64 -d in.txt &gt; out.zip</code> 還原。
+  </div>
 </div>
 
 <script>
@@ -633,6 +653,22 @@ function fountainFrame(f, seed) {
     for (var i = 0; i < chunks.length; i++) active.push(i);
   }
 
+  function applyOnlyPages() {
+    if (fountain) { alert('噴泉碼不需要補頁：繼續輪播，手機收到足夠張數就會自動完成。'); return; }
+    if (!chunks.length) return;
+    var txt = $('onlyPages').value.replace(/^\s+|\s+$/g, '');
+    stopPlay();
+    if (!txt) {
+      setAllActive();
+    } else {
+      var list = parsePageList(txt, chunks.length);
+      if (!list.length) { alert('看不懂頁碼，請輸入像 7,12,19-22 這樣的格式（共 ' + chunks.length + ' 張）。'); return; }
+      active = list;
+    }
+    curScreen = 0;
+    updateUI();
+  }
+
   $('fileInput').onchange = function (e) {
     var f = (e.target || e.srcElement).files[0];
     if (!f) return;
@@ -700,6 +736,7 @@ function fountainFrame(f, seed) {
     }
     matCache = [];
     setAllActive();
+    $('onlyPages').value = '';
     rawCrc = crc32Hex(rawFileBytes);
     curScreen = 0;
     var hi = '';
@@ -835,22 +872,16 @@ function fountainFrame(f, seed) {
     for (i = 0; i < mats.length; i++) if (mats[i].n > nMax) nMax = mats[i].n;
     var QUIET = 4;
     var cellMods = nMax + QUIET * 2;
-    var fsOn = isFs();
-    var availW = Math.max(300, (window.innerWidth || document.documentElement.clientWidth) - (fsOn ? 4 : 60));
-    var availH = Math.max(300, (window.innerHeight || document.documentElement.clientHeight) - (fsOn ? 4 : 30));
+    var availW = Math.max(300, (window.innerWidth || document.documentElement.clientWidth) - 60);
+    var availH = Math.max(300, (window.innerHeight || document.documentElement.clientHeight) - 30);
 
     // 版面用「每畫面張數」決定 (最後一個畫面張數較少時版面不跳動)，挑每格像素最大的排法
     var slots = fountain ? perScreen : Math.min(perScreen, active.length);
-    var best = { scale: -1, cols: 1, rows: 1, slots: 0 }, cols, rows, sc;
+    var best = { scale: 0, cols: 1, rows: 1 }, cols, rows, sc;
     for (cols = 1; cols <= slots; cols++) {
       rows = Math.ceil(slots / cols);
       sc = Math.floor(Math.min(availW / cols, availH / rows) / cellMods);
-      if (sc > best.scale ||
-          (sc === best.scale && (cols * rows - slots < best.cols * best.rows - best.slots ||
-            (cols * rows - slots === best.cols * best.rows - best.slots &&
-             Math.abs(cols / rows - 1.78) < Math.abs(best.cols / best.rows - 1.78))))) {
-        best = { scale: sc, cols: cols, rows: rows, slots: slots };
-      }
+      if (sc > best.scale) best = { scale: sc, cols: cols, rows: rows };
     }
     var scale = Math.min(10, Math.max(2, best.scale));
     var cell = cellMods * scale;
@@ -868,8 +899,7 @@ function fountainFrame(f, seed) {
         scale);
     }
     accEnc += tB - tA; accDraw += nowMs() - tB;
-    canvas.style.marginTop = fsOn ? Math.max(0, Math.floor((availH - ch) / 2)) + 'px' : '';
-    return { scale: scale, version: (nMax - 17) / 4, fits: (cw <= availW + 4 && ch <= availH + 4), cols: best.cols, rows: best.rows };
+    return { scale: scale, version: (nMax - 17) / 4 };
   }
 
   function updateUI(force) {
@@ -898,8 +928,7 @@ function fountainFrame(f, seed) {
       single = (screenCount() <= 1);
     }
     sub += ' | QR Version ' + info.version + ' | 每格 ' + info.scale + ' 像素';
-    if (perScreen > 1) sub += '（' + info.cols + 'x' + info.rows + '）';
-    if (!info.fits) sub += '【畫面放不下：請按「全螢幕只顯示 QR」，或減少每畫面張數】';
+    if (info.scale < 3) sub += '（偏小，掃不到請減少每畫面張數或單張容量）';
     if (rateTxt) sub += ' | ' + rateTxt;
     if (buildNote) sub += ' | ' + buildNote;
     setText('subInfo', sub);
@@ -1042,35 +1071,12 @@ function fountainFrame(f, seed) {
   }
 
   $('speedSel').onchange = function () { resetPace(); if (playing) startLoop(); };
-  var wrapEl = $('qrWrap');
-  function isFs() {
-    return (document.fullscreenElement || document.webkitFullscreenElement || document.msFullscreenElement) === wrapEl;
-  }
-  function enterFs() {
-    var fn = wrapEl.requestFullscreen || wrapEl.webkitRequestFullscreen || wrapEl.msRequestFullscreen;
-    if (!fn) { alert('這個瀏覽器不支援全螢幕，請改按 F11 並把頁面捲到 QR 的位置。'); return; }
-    try { fn.call(wrapEl); } catch (e) { alert('無法進入全螢幕：' + e.message); }
-  }
-  function onFsChange() {
-    wrapEl.className = isFs() ? 'fs' : '';
-    setTimeout(function () { if (hasData()) updateUI(true); }, 80);
-  }
-  document.addEventListener('fullscreenchange', onFsChange);
-  document.addEventListener('webkitfullscreenchange', onFsChange);
-  document.addEventListener('MSFullscreenChange', onFsChange);
-  $('fsBtn').onclick = enterFs;
-  wrapEl.onclick = function () { if (isFs()) togglePlay(); };
-  document.onkeydown = function (e) {
-    e = e || window.event;
-    if (!isFs()) return;
-    if (e.keyCode === 32) { togglePlay(); if (e.preventDefault) e.preventDefault(); return false; }
-    if (e.keyCode === 37) prevScreen();
-    if (e.keyCode === 39) nextScreen();
-  };
-
   $('prevBtn').onclick = prevScreen;
   $('nextBtn').onclick = nextScreen;
   $('playBtn').onclick = togglePlay;
+  $('onlyBtn').onclick = applyOnlyPages;
+  $('allBtn').onclick = function () { $('onlyPages').value = ''; if (!fountain) applyOnlyPages(); };
+  $('onlyPages').onkeydown = function (e) { e = e || window.event; if (e.keyCode === 13) applyOnlyPages(); };
   $('chunkSizeSel').onchange = rebuildChunks;
   $('perScreenSel').onchange = rebuildChunks;
   $('formatSel').onchange = rebuildChunks;
@@ -1089,8 +1095,6 @@ function fountainFrame(f, seed) {
   // 預設展示一張歡迎 QR Code
   $('quickText').value = 'Hello from Windows Server Offline QR Sender!';
   fromTextInput();
-  // 歡迎畫面是純文字，但選單要停在選檔後實際會用的格式，免得看起來像預設是純文字
-  $('formatSel').value = 'fountain';
 })();
 </script>
 </body>
