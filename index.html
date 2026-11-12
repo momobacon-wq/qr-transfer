@@ -91,11 +91,11 @@
       4. <b>帶頁碼標籤</b>：方格一格一格變綠；缺的頁碼會用橘色字列出，照打進傳送端「只補播這幾張」。<br>
       5. 完成後按「下載檔案」。<br>
       6. 掃不到：手機靠近一點、傳送端把輪播間隔調慢、「單張容量」調小、「每畫面張數」降到 1，或在上方換一個解碼引擎。「系統內建」引擎在部分 Android 上可能較快，但讀不了二進位噴泉碼，只適合文字版噴泉碼與帶頁碼標籤。<br>
-      「接收率」是手機實際讀到的張數佔傳送端播出張數的比例。「收到每秒幾張」才是實際速度：換相機模式、換手機拿法（橫拿讓 QR 區域填滿畫面）時看這個數字有沒有變大。<br>
+      「接收率」是手機實際讀到的張數佔傳送端播出張數的比例。「每張讀到幾個」是每張相機照片平均認出幾個 QR（含重複的），傳送端暫停時應該等於每畫面張數。「收到每秒幾張」才是實際速度：換相機模式、換手機拿法（橫拿讓 QR 區域填滿畫面）時看這個數字有沒有變大。<br>
       噴泉碼會自動驗證 SHA-256（傳送端有附的話）；壓縮過的內容會自動解壓。<br>
       所有解碼與重組都在這支手機上完成，資料不會上傳到任何地方。本頁載入一次後可離線使用。
     </details>
-    <div class="sub" id="buildInfo">接收頁版本 2026-11-12d</div>
+    <div class="sub" id="buildInfo">接收頁版本 2026-11-12e</div>
   </div>
 </div>
 
@@ -617,7 +617,7 @@ var LT = (function () {
   }
 
   /* ---------------- 相機與掃描迴圈 ---------------- */
-  var running = false, frames = 0, hits = 0, flashTimer = null, fpsT = 0, fpsN = 0;
+  var running = false, frames = 0, hits = 0, flashTimer = null, fpsT = 0, fpsN = 0, codesN = 0;
 
   function flash() {
     var f = $('flash'); f.className = 'on';
@@ -676,11 +676,12 @@ var LT = (function () {
     var fresh = false, i;
     for (i = 0; i < items.length; i++) if (handleItem({ text: items[i].text, bytes: items[i].bytes, native: false })) fresh = true;
     if (items.length) hits++;
+    codesN += items.length;
     if (fresh) flash();
     var now = Date.now();
     if (now - fpsT > 2000) {
-      if (fpsT && running) showCam('每秒解 ' + (fpsN * 1000 / (now - fpsT)).toFixed(1) + ' 格｜' + (poolNote || ('平行解碼 x' + POOL_SIZE)));
-      fpsT = now; fpsN = 0;
+      if (fpsT && running) showCam('每秒解 ' + (fpsN * 1000 / (now - fpsT)).toFixed(1) + ' 格｜每張讀到 ' + (fpsN ? codesN / fpsN : 0).toFixed(1) + ' 個｜' + (poolNote || ('平行解碼 x' + POOL_SIZE)));
+      fpsT = now; fpsN = 0; codesN = 0;
     }
   }
 
@@ -716,11 +717,12 @@ var LT = (function () {
       var fresh = false, i;
       for (i = 0; i < items.length; i++) if (handleItem(items[i])) fresh = true;
       if (items.length) hits++;
+    codesN += items.length;
       if (fresh) flash();
       var now = Date.now();
       if (now - fpsT > 2000) {
-        if (fpsT && running) showCam('每秒解 ' + (fpsN * 1000 / (now - fpsT)).toFixed(1) + ' 格');
-        fpsT = now; fpsN = 0;
+        if (fpsT && running) showCam('每秒解 ' + (fpsN * 1000 / (now - fpsT)).toFixed(1) + ' 格｜每張讀到 ' + (fpsN ? codesN / fpsN : 0).toFixed(1) + ' 個');
+        fpsT = now; fpsN = 0; codesN = 0;
       }
     }).catch(function (e) {
       $('camInfo').innerHTML = '<span class="err">解碼錯誤：' + (e && e.message || e) + '</span>';
