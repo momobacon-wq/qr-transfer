@@ -66,8 +66,8 @@
     </label>
   </div>
 
-  <div id="statusText" class="status">請選擇檔案，或直接在下方輸入文字</div>
-  <div id="subInfo" class="sub-info">支援任意檔案（建議先壓縮）或直接貼上文字轉 QR Code</div>
+  <div id="statusText" class="status" style="color:#ffab40">程式還沒有執行。如果這行字一直沒變，表示瀏覽器擋掉了這個網頁的指令碼。</div>
+  <div id="subInfo" class="sub-info">請看視窗最下方或最上方有沒有「Internet Explorer 已限制這個網頁執行指令碼或 ActiveX 控制項」的提示列，按「允許被封鎖的內容」(Allow blocked content)。沒有提示列時，按 F12 看「文件模式」是不是 11 或 Edge。</div>
 
   <div class="row">
     <button id="prevBtn" disabled>|&lt; 上一畫面</button>
@@ -115,6 +115,24 @@
 </div>
 
 <script>
+// 任何程式錯誤都直接顯示在畫面上，方便回報
+window.onerror = function (msg, url, line) {
+  try {
+    var el = document.getElementById('statusText'), sub = document.getElementById('subInfo');
+    if (el) { el.style.color = '#ff6b6b'; el.innerText = '程式錯誤：' + msg + '（第 ' + line + ' 行）'; }
+    if (sub) sub.innerText = '文件模式: ' + (document.documentMode || '非 IE') + ' | ' + navigator.userAgent + ' | 請把這個畫面拍下來回報';
+  } catch (e) {}
+  return false;
+};
+(function () {
+  var miss = [];
+  if (typeof Uint8Array === 'undefined' || typeof Uint32Array === 'undefined') miss.push('Typed Array');
+  if (typeof FileReader === 'undefined') miss.push('FileReader');
+  if (!document.createElement('canvas').getContext) miss.push('Canvas');
+  if (typeof btoa === 'undefined') miss.push('btoa');
+  if (miss.length) throw new Error('這個瀏覽器模式缺少 ' + miss.join('、') + '，需要 IE10 以上的文件模式（請關閉相容性檢視）');
+})();
+
 /* =====================================================================
    純 ES5 標準 ISO/IEC 18004 QR Code 產生器 (Byte Mode, Error Level L)
    支援 Version 1 ~ 40 (最高 2953 Bytes)，無外部依賴，IE11 可執行
@@ -875,6 +893,7 @@ function fountainFrame(f, seed) {
     resizeTimer = setTimeout(function () { if (hasData()) updateUI(); }, 150);
   };
 
+  $('statusText').style.color = '';
   // 預設展示一張歡迎 QR Code
   $('quickText').value = 'Hello from Windows Server Offline QR Sender!';
   fromTextInput();
